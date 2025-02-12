@@ -258,10 +258,11 @@ impl ChatApp {
 
         let mut show_settings = self.show_settings;
         let endpoint_type = self.endpoint_type;
-        let api_url_edit = self.api_url_edit.clone();
+        let mut api_url_edit = self.api_url_edit.clone();
         let available_models = self.available_models.clone();
         let selected_model = self.selected_model.clone();
         let models_loading = self.models_loading;
+        let mut url_changed = false;
 
         egui::Window::new("Settings")
             .open(&mut show_settings)
@@ -276,16 +277,22 @@ impl ChatApp {
                     ui.label("Endpoint Type:");
                     let mut new_endpoint = endpoint_type;  
                     if ui.radio_value(&mut new_endpoint, EndpointType::LMStudio, "LM Studio").clicked() {
+                        if self.api_url == self.endpoint_type.default_url() {
+                            // Only update URL if it's currently the default
+                            self.api_url = new_endpoint.default_url().to_string();
+                            api_url_edit = self.api_url.clone();
+                        }
                         self.endpoint_type = new_endpoint;
-                        self.api_url = self.endpoint_type.default_url().to_string();
-                        self.api_url_edit = self.api_url.clone();
                         self.client = LLMClient::new(self.api_url.clone(), self.endpoint_type);
                         self.refresh_models(ctx);
                     }
                     if ui.radio_value(&mut new_endpoint, EndpointType::Ollama, "Ollama").clicked() {
+                        if self.api_url == self.endpoint_type.default_url() {
+                            // Only update URL if it's currently the default
+                            self.api_url = new_endpoint.default_url().to_string();
+                            api_url_edit = self.api_url.clone();
+                        }
                         self.endpoint_type = new_endpoint;
-                        self.api_url = self.endpoint_type.default_url().to_string();
-                        self.api_url_edit = self.api_url.clone();
                         self.client = LLMClient::new(self.api_url.clone(), self.endpoint_type);
                         self.refresh_models(ctx);
                     }
@@ -319,15 +326,19 @@ impl ChatApp {
                 
                 ui.add_space(8.0);
                 
+                // API URL input
                 ui.horizontal(|ui| {
                     ui.label("API URL:");
-                    let mut new_url = api_url_edit.clone();
-                    if ui.text_edit_singleline(&mut new_url).lost_focus() {
-                        if reqwest::Url::parse(&new_url).is_ok() {
-                            self.api_url = new_url.clone();
-                            self.api_url_edit = new_url;
+                    let response = ui.text_edit_singleline(&mut api_url_edit);
+                    if response.changed() {
+                        url_changed = true;
+                    }
+                    if response.lost_focus() && url_changed {
+                        if let Ok(url) = reqwest::Url::parse(&api_url_edit) {
+                            self.api_url = url.to_string();
                             self.client = LLMClient::new(self.api_url.clone(), self.endpoint_type);
                             self.refresh_models(ctx);
+                            url_changed = false;
                         }
                     }
                 });
@@ -340,13 +351,14 @@ impl ChatApp {
                 
                 if ui.button("Reset to Default").clicked() {
                     self.api_url = self.endpoint_type.default_url().to_string();
-                    self.api_url_edit = self.api_url.clone();
+                    api_url_edit = self.api_url.clone();
                     self.client = LLMClient::new(self.api_url.clone(), self.endpoint_type);
                     self.refresh_models(ctx);
                 }
             });
             
         self.show_settings = show_settings;
+        self.api_url_edit = api_url_edit;
     }
 }
 
