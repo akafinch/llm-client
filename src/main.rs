@@ -276,7 +276,7 @@ impl ChatApp {
                 ui.horizontal(|ui| {
                     ui.label("Endpoint Type:");
                     let mut new_endpoint = endpoint_type;  
-                    if ui.radio_value(&mut new_endpoint, EndpointType::LMStudio, "LM Studio").clicked() {
+                    if ui.radio_value(&mut new_endpoint, EndpointType::LMStudio, "OpenAI-Compatible").clicked() {
                         if self.api_url == self.endpoint_type.default_url() {
                             // Only update URL if it's currently the default
                             self.api_url = new_endpoint.default_url().to_string();
