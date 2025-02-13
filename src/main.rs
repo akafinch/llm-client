@@ -173,11 +173,11 @@ impl LLMClient {
 
     async fn chat_stream(&self, chat_history: &[(String, String)], prompt: &str, model: &str, tx: SyncSender<String>) -> Result<()> {
         let chat_url = self.endpoint_type.chat_endpoint(&self.api_url);
-        println!("Sending chat request to: {}", chat_url);
-
+        
         // Convert chat history to messages format
         let mut messages = Vec::new();
-        for (role, content) in chat_history {
+        // Add all messages except the last one (which is the current prompt)
+        for (role, content) in chat_history.iter().take(chat_history.len().saturating_sub(1)) {
             messages.push(serde_json::json!({
                 "role": role,
                 "content": content
@@ -212,25 +212,18 @@ impl LLMClient {
             }
         };
 
-        println!("Request body: {}", serde_json::to_string_pretty(&request_body).unwrap());
-
         let response = self.client
             .post(&chat_url)
             .json(&request_body)
             .timeout(Duration::from_secs(300))  // 5 minute timeout for the entire stream
             .send()
             .await
-            .map_err(|e| {
-                println!("Request error: {:?}", e);
-                e
-            })
-            .context("Failed to send request")?;
+            .map_err(|e| anyhow::anyhow!("Failed to send request: {}", e))?;
 
-        println!("Response status: {}", response.status());
-        if !response.status().is_success() {
+        let status = response.status();
+        if !status.is_success() {
             let error_text = response.text().await.unwrap_or_default();
-            println!("Error response: {}", error_text);
-            return Err(anyhow::anyhow!("Server returned error: {}", error_text));
+            return Err(anyhow::anyhow!("Request failed with status {}: {}", status, error_text));
         }
 
         let mut stream = response.bytes_stream();
@@ -241,7 +234,6 @@ impl LLMClient {
             match chunk_result {
                 Ok(chunk) => {
                     let chunk_str = String::from_utf8_lossy(&chunk);
-                    println!("Received chunk: {}", chunk_str);
                     
                     match self.endpoint_type {
                         EndpointType::LMStudio => {
@@ -274,8 +266,6 @@ impl LLMClient {
                         EndpointType::Ollama => {
                             // Ollama returns each chunk as a complete JSON object
                             if let Ok(response) = serde_json::from_str::<serde_json::Value>(&chunk_str) {
-                                println!("Parsed response: {:?}", response);
-                                
                                 // Get content from message.content
                                 if let Some(message) = response.get("message") {
                                     if let Some(content) = message.get("content") {
@@ -583,6 +573,17 @@ impl eframe::App for ChatApp {
                     }
                 }
                 ui.label("LLM Chat");
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("New Chat").clicked() {
+                        // Clear all chat state
+                        self.chat_history.clear();
+                        self.current_response.clear();
+                        self.input.clear();
+                        self.pending_response = None;
+                        self.response_receiver = None;
+                        self.error_message = None;
+                    }
+                });
             });
         });
 
