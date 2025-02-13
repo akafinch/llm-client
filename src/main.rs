@@ -6,7 +6,8 @@ use futures_util::StreamExt;
 use poll_promise::Promise;
 use serde::{Deserialize, Serialize};
 use reqwest::Client;
-use std::sync::mpsc::{channel, Sender};
+use std::time::Duration;
+use std::sync::mpsc::{self, sync_channel, SyncSender};
 use tokio::runtime::Runtime;
 
 const DEFAULT_API_URL: &str = "http://localhost:1234/v1/chat/completions";
@@ -28,8 +29,30 @@ impl EndpointType {
     
     fn models_endpoint(&self, base_url: &str) -> String {
         match self {
-            EndpointType::LMStudio | EndpointType::Ollama => {
-                base_url.replace("/chat/completions", "/models")
+            EndpointType::LMStudio => {
+                // For LM Studio, use OpenAI compatible endpoint
+                let base = base_url.trim_end_matches("/v1/chat/completions");
+                format!("{}/v1/models", base)
+            }
+            EndpointType::Ollama => {
+                // For Ollama, use /api/tags endpoint
+                let base = base_url.trim_end_matches("/v1/chat/completions");
+                format!("{}/api/tags", base)
+            }
+        }
+    }
+
+    fn chat_endpoint(&self, base_url: &str) -> String {
+        match self {
+            EndpointType::LMStudio => {
+                // For LM Studio, use OpenAI compatible endpoint
+                let base = base_url.trim_end_matches("/v1/chat/completions");
+                format!("{}/v1/chat/completions", base)
+            }
+            EndpointType::Ollama => {
+                // For Ollama, use /api/chat endpoint
+                let base = base_url.trim_end_matches("/v1/chat/completions");
+                format!("{}/api/chat", base)
             }
         }
     }
@@ -76,6 +99,16 @@ struct ChatResponse {
     choices: Vec<Choice>,
 }
 
+#[derive(Debug, Deserialize)]
+struct ModelDetails {
+    name: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct OllamaModelsResponse {
+    models: Vec<ModelDetails>,
+}
+
 #[derive(Clone)]
 struct LLMClient {
     client: Client,
@@ -85,8 +118,13 @@ struct LLMClient {
 
 impl LLMClient {
     fn new(api_url: String, endpoint_type: EndpointType) -> Self {
+        let client = Client::builder()
+            .timeout(Duration::from_secs(5))  // 5 second timeout
+            .build()
+            .unwrap_or_else(|_| Client::new());
+            
         Self {
-            client: Client::new(),
+            client,
             api_url,
             endpoint_type,
         }
@@ -94,67 +132,187 @@ impl LLMClient {
 
     async fn list_models(&self) -> Result<Vec<String>> {
         let models_url = self.endpoint_type.models_endpoint(&self.api_url);
+        println!("Fetching models from: {}", models_url);
+        
         let response = self.client
             .get(&models_url)
             .send()
             .await
-            .context("Failed to fetch models")?;
+            .context(format!("Failed to fetch models from {}. Please check if the server is running and accessible", &models_url))?;
             
-        let models: ModelsResponse = response
-            .json()
-            .await
-            .context("Failed to parse models response")?;
+        if !response.status().is_success() {
+            return Err(anyhow::anyhow!(
+                "Server returned error {}: {}",
+                response.status(),
+                response.text().await.unwrap_or_else(|_| "No error message".to_string())
+            ));
+        }
             
-        Ok(models.data.into_iter().map(|m| m.id).collect())
+        match self.endpoint_type {
+            EndpointType::LMStudio => {
+                let models: ModelsResponse = response
+                    .json()
+                    .await
+                    .context("Failed to parse models response")?;
+                    
+                Ok(models.data.into_iter().map(|m| m.id).collect())
+            }
+            EndpointType::Ollama => {
+                // First print the raw response for debugging
+                let text = response.text().await?;
+                println!("Raw Ollama response: {}", text);
+                
+                // Parse the response from the text
+                let models: OllamaModelsResponse = serde_json::from_str(&text)
+                    .context("Failed to parse Ollama response")?;
+                    
+                Ok(models.models.into_iter().map(|m| m.name).collect())
+            }
+        }
     }
 
-    async fn chat_stream(&self, prompt: &str, model: &str, tx: Sender<String>) -> Result<()> {
-        let request = ChatRequest {
-            model: model.to_string(),
-            messages: vec![ChatMessage {
-                role: "user".to_string(),
-                content: prompt.to_string(),
-            }],
-            temperature: 0.7,
-            stream: true,
+    async fn chat_stream(&self, chat_history: &[(String, String)], prompt: &str, model: &str, tx: SyncSender<String>) -> Result<()> {
+        let chat_url = self.endpoint_type.chat_endpoint(&self.api_url);
+        println!("Sending chat request to: {}", chat_url);
+
+        // Convert chat history to messages format
+        let mut messages = Vec::new();
+        for (role, content) in chat_history {
+            messages.push(serde_json::json!({
+                "role": role,
+                "content": content
+            }));
+        }
+        // Add current prompt
+        messages.push(serde_json::json!({
+            "role": "user",
+            "content": prompt
+        }));
+
+        // Different request format for different endpoints
+        let request_body = match self.endpoint_type {
+            EndpointType::LMStudio => {
+                let request = ChatRequest {
+                    model: model.to_string(),
+                    messages: messages.iter().map(|m| ChatMessage {
+                        role: m["role"].as_str().unwrap().to_string(),
+                        content: m["content"].as_str().unwrap().to_string(),
+                    }).collect(),
+                    temperature: 0.7,
+                    stream: true,
+                };
+                serde_json::to_value(request).unwrap()
+            }
+            EndpointType::Ollama => {
+                serde_json::json!({
+                    "model": model,
+                    "messages": messages,
+                    "stream": true
+                })
+            }
         };
 
+        println!("Request body: {}", serde_json::to_string_pretty(&request_body).unwrap());
+
         let response = self.client
-            .post(&self.api_url)
-            .json(&request)
+            .post(&chat_url)
+            .json(&request_body)
+            .timeout(Duration::from_secs(300))  // 5 minute timeout for the entire stream
             .send()
             .await
+            .map_err(|e| {
+                println!("Request error: {:?}", e);
+                e
+            })
             .context("Failed to send request")?;
+
+        println!("Response status: {}", response.status());
+        if !response.status().is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            println!("Error response: {}", error_text);
+            return Err(anyhow::anyhow!("Server returned error: {}", error_text));
+        }
 
         let mut stream = response.bytes_stream();
         let mut buffer = String::new();
+        let mut done = false;
 
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk.context("Failed to read chunk")?;
-            let chunk_str = String::from_utf8_lossy(&chunk);
-            
-            for line in chunk_str.split("data: ") {
-                let line = line.trim();
-                if line.is_empty() || line == "[DONE]" {
-                    continue;
-                }
+        while let Some(chunk_result) = stream.next().await {
+            match chunk_result {
+                Ok(chunk) => {
+                    let chunk_str = String::from_utf8_lossy(&chunk);
+                    println!("Received chunk: {}", chunk_str);
+                    
+                    match self.endpoint_type {
+                        EndpointType::LMStudio => {
+                            // LMStudio uses SSE format with "data: " prefix
+                            for line in chunk_str.lines() {
+                                let line = line.trim();
+                                if !line.starts_with("data: ") {
+                                    continue;
+                                }
+                                let line = &line["data: ".len()..];
+                                if line == "[DONE]" {
+                                    done = true;
+                                    continue;
+                                }
 
-                if let Ok(response) = serde_json::from_str::<ChatResponse>(line) {
-                    if let Some(choice) = response.choices.first() {
-                        if let Some(content) = &choice.delta.content {
-                            buffer.push_str(content);
-                            tx.send(buffer.clone()).ok();
+                                if let Ok(response) = serde_json::from_str::<ChatResponse>(line) {
+                                    if let Some(choice) = response.choices.first() {
+                                        if let Some(content) = &choice.delta.content {
+                                            buffer.push_str(content);
+                                            tx.send(buffer.clone()).ok();
+                                        }
+                                        
+                                        if choice.finish_reason.is_some() {
+                                            done = true;
+                                        }
+                                    }
+                                }
+                            }
                         }
-                        
-                        if choice.finish_reason.is_some() {
-                            return Ok(());
+                        EndpointType::Ollama => {
+                            // Ollama returns each chunk as a complete JSON object
+                            if let Ok(response) = serde_json::from_str::<serde_json::Value>(&chunk_str) {
+                                println!("Parsed response: {:?}", response);
+                                
+                                // Get content from message.content
+                                if let Some(message) = response.get("message") {
+                                    if let Some(content) = message.get("content") {
+                                        if let Some(text) = content.as_str() {
+                                            // Skip the thinking tokens but preserve newlines
+                                            if text != "<think>" && text != "</think>" {
+                                                // If we get pure newlines, add just one
+                                                if text.trim().is_empty() && text.contains('\n') {
+                                                    buffer.push('\n');
+                                                } else {
+                                                    buffer.push_str(text);
+                                                }
+                                                tx.send(buffer.clone()).ok();
+                                            }
+                                        }
+                                    }
+                                }
+                                
+                                if response.get("done").and_then(|v| v.as_bool()).unwrap_or(false) {
+                                    done = true;
+                                }
+                            }
                         }
                     }
+                }
+                Err(e) => {
+                    println!("Error reading chunk: {:?}", e);
+                    return Err(e).context("Failed to read chunk");
                 }
             }
         }
 
-        Ok(())
+        if done {
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("Stream ended without completion"))
+        }
     }
 }
 
@@ -164,7 +322,7 @@ struct ChatApp {
     input: String,
     chat_history: Vec<(String, String)>,
     pending_response: Option<Promise<Result<()>>>,
-    response_receiver: Option<std::sync::mpsc::Receiver<String>>,
+    response_receiver: Option<mpsc::Receiver<String>>,
     current_response: String,
     show_settings: bool,
     api_url: String,
@@ -173,11 +331,12 @@ struct ChatApp {
     available_models: Vec<String>,
     selected_model: String,
     models_loading: bool,
+    error_message: Option<String>,
 }
 
 impl ChatApp {
     fn new(_cc: &eframe::CreationContext<'_>) -> Self {
-        let endpoint_type = EndpointType::LMStudio;
+        let endpoint_type = EndpointType::Ollama;
         let api_url = endpoint_type.default_url().to_string();
         Self {
             client: LLMClient::new(api_url.clone(), endpoint_type),
@@ -187,68 +346,73 @@ impl ChatApp {
             pending_response: None,
             response_receiver: None,
             current_response: String::new(),
-            show_settings: false,
-            api_url,
-            api_url_edit: endpoint_type.default_url().to_string(),
+            show_settings: true,
+            api_url: api_url.clone(),
+            api_url_edit: api_url,
             endpoint_type,
             available_models: Vec::new(),
-            selected_model: "local-model".to_string(), // Default model
+            selected_model: "local-model".to_string(),
             models_loading: false,
+            error_message: None,
         }
     }
 
     fn refresh_models(&mut self, ctx: &egui::Context) {
-        if self.models_loading {
-            return;
-        }
-        
         self.models_loading = true;
-        let client = self.client.clone();
+        self.error_message = None;  // Clear any previous errors
         
+        let client = self.client.clone();
         let ctx = ctx.clone();
-        std::thread::spawn(move || {
-            let rt = Runtime::new().unwrap();
-            let models = rt.block_on(client.list_models());
-            
-            ctx.request_repaint();
-            if let Ok(models) = models {
-                ctx.memory_mut(|mem| {
-                    mem.data.insert_temp("available_models".to_owned().into(), models);
-                });
+        
+        tokio::spawn(async move {
+            match client.list_models().await {
+                Ok(models) => {
+                    ctx.memory_mut(|mem| {
+                        mem.data.insert_temp(egui::Id::new("available_models").into(), models);
+                    });
+                }
+                Err(e) => {
+                    let error_msg = format!("Failed to fetch models: {}", e);
+                    println!("{}", error_msg);
+                    ctx.memory_mut(|mem| {
+                        mem.data.insert_temp(egui::Id::new("models_error").into(), error_msg);
+                    });
+                }
             }
         });
     }
 
     fn send_message(&mut self, _ctx: &egui::Context) {
-        if self.input.trim().is_empty() || self.pending_response.is_some() {
+        if self.input.is_empty() || self.pending_response.is_some() {
             return;
         }
 
         let prompt = std::mem::take(&mut self.input);
         self.chat_history.push(("user".to_string(), prompt.clone()));
-        self.current_response.clear();
-        
-        let (tx, rx) = channel();
-        self.response_receiver = Some(rx);
-        
+
         let client = self.client.clone();
         let model = self.selected_model.clone();
+        let chat_history = self.chat_history.clone();
         
-        self.pending_response = Some(Promise::spawn_thread(
-            "llm_response".to_string(),
-            move || {
-                tokio::runtime::Runtime::new()
-                    .unwrap()
-                    .block_on(async move {
-                        client.chat_stream(&prompt, &model, tx).await
-                    })
-            },
-        ));
+        // Create a channel with a large buffer for fast chunks
+        let (tx, rx) = sync_channel(16384); // 16K buffer
+        self.response_receiver = Some(rx);
+        
+        self.pending_response = Some(Promise::spawn_thread("llm_response".to_string(), move || {
+            let rt = Runtime::new().unwrap();
+            rt.block_on(async move {
+                client.chat_stream(&chat_history, &prompt, &model, tx).await
+            })
+        }));
     }
 
     fn show_settings_window(&mut self, ctx: &egui::Context) {
-        // Check for model list updates
-        if let Some(models) = ctx.memory_mut(|mem| mem.data.remove_temp::<Vec<String>>("available_models".to_owned().into())) {
+        // Check for model list updates or errors
+        if let Some(error) = ctx.memory_mut(|mem| mem.data.remove_temp::<String>(egui::Id::new("models_error"))) {
+            self.error_message = Some(error);
+            self.models_loading = false;
+        }
+        if let Some(models) = ctx.memory_mut(|mem| mem.data.remove_temp::<Vec<String>>(egui::Id::new("available_models"))) {
             self.available_models = models;
             self.models_loading = false;
             
@@ -260,7 +424,7 @@ impl ChatApp {
 
         let mut show_settings = self.show_settings;
         let endpoint_type = self.endpoint_type;
-        let mut api_url_edit = self.api_url_edit.clone();
+        let mut api_url_edit = self.api_url_edit.clone();  // Use the edit buffer, not the current URL
         let available_models = self.available_models.clone();
         let selected_model = self.selected_model.clone();
         let models_loading = self.models_loading;
@@ -279,21 +443,11 @@ impl ChatApp {
                     ui.label("Endpoint Type:");
                     let mut new_endpoint = endpoint_type;  
                     if ui.radio_value(&mut new_endpoint, EndpointType::LMStudio, "OpenAI-Compatible").clicked() {
-                        if self.api_url == self.endpoint_type.default_url() {
-                            // Only update URL if it's currently the default
-                            self.api_url = new_endpoint.default_url().to_string();
-                            api_url_edit = self.api_url.clone();
-                        }
                         self.endpoint_type = new_endpoint;
                         self.client = LLMClient::new(self.api_url.clone(), self.endpoint_type);
                         self.refresh_models(ctx);
                     }
                     if ui.radio_value(&mut new_endpoint, EndpointType::Ollama, "Ollama").clicked() {
-                        if self.api_url == self.endpoint_type.default_url() {
-                            // Only update URL if it's currently the default
-                            self.api_url = new_endpoint.default_url().to_string();
-                            api_url_edit = self.api_url.clone();
-                        }
                         self.endpoint_type = new_endpoint;
                         self.client = LLMClient::new(self.api_url.clone(), self.endpoint_type);
                         self.refresh_models(ctx);
@@ -333,14 +487,23 @@ impl ChatApp {
                     ui.label("API URL:");
                     let response = ui.text_edit_singleline(&mut api_url_edit);
                     if response.changed() {
-                        url_changed = true;
+                        // Update the edit buffer in both places
+                        println!("URL edit changed to: {}", api_url_edit);
+                        self.api_url_edit = api_url_edit.clone();
                     }
-                    if response.lost_focus() && url_changed {
-                        if let Ok(url) = reqwest::Url::parse(&api_url_edit) {
-                            self.api_url = url.to_string();
-                            self.client = LLMClient::new(self.api_url.clone(), self.endpoint_type);
-                            self.refresh_models(ctx);
-                            url_changed = false;
+                    
+                    if ui.button("Test Connection").clicked() {
+                        println!("Testing connection to: {}", api_url_edit);
+                        match reqwest::Url::parse(&api_url_edit) {
+                            Ok(_) => {
+                                // Update the actual URL and try to connect
+                                self.api_url = api_url_edit.clone();
+                                self.client = LLMClient::new(self.api_url.clone(), self.endpoint_type);
+                                self.refresh_models(ctx);
+                            }
+                            Err(e) => {
+                                self.error_message = Some(format!("Invalid URL: {}", e));
+                            }
                         }
                     }
                 });
@@ -348,6 +511,11 @@ impl ChatApp {
                 ui.add_space(4.0);
                 ui.label("Current: ").on_hover_text("The URL currently in use");
                 ui.label(&self.api_url);
+                
+                // Display error message if present
+                if let Some(error) = &self.error_message {
+                    ui.colored_label(egui::Color32::RED, error);
+                }
                 
                 ui.separator();
                 
@@ -367,27 +535,41 @@ impl ChatApp {
 impl eframe::App for ChatApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Request a repaint after a short delay (16ms = ~60 FPS)
-        ctx.request_repaint_after(std::time::Duration::from_millis(16));
+        ctx.request_repaint_after(Duration::from_millis(16));
 
         // Check for new response chunks
         if let Some(rx) = &self.response_receiver {
             if let Ok(new_content) = rx.try_recv() {
                 self.current_response = new_content;
+                ctx.request_repaint();
             }
         }
 
         // Check if the response is complete
         if let Some(promise) = &self.pending_response {
             if let Some(result) = promise.ready() {
-                if let Err(e) = result {
-                    self.chat_history.push(("error".to_string(), format!("Error: {}", e)));
-                } else {
-                    // Add the final response to chat history before clearing
-                    self.chat_history.push(("assistant".to_string(), self.current_response.clone()));
+                match result {
+                    Err(e) => {
+                        // Only show error if we don't have content
+                        if self.current_response.is_empty() {
+                            self.chat_history.push(("error".to_string(), format!("Error: {}", e)));
+                        } else {
+                            // If we have content, treat as success despite error
+                            self.chat_history.push(("assistant".to_string(), self.current_response.clone()));
+                        }
+                    }
+                    Ok(()) => {
+                        // Only move to history if we have content
+                        if !self.current_response.is_empty() {
+                            self.chat_history.push(("assistant".to_string(), self.current_response.clone()));
+                        }
+                    }
                 }
                 self.current_response.clear();
                 self.pending_response = None;
                 self.response_receiver = None;
+                // Request repaint to show final state
+                ctx.request_repaint();
             }
         }
 
