@@ -27,32 +27,58 @@ impl EndpointType {
         }
     }
     
-    fn models_endpoint(&self, base_url: &str) -> String {
+    fn default_port(&self) -> &'static str {
+        match self {
+            EndpointType::LMStudio => "1234",
+            EndpointType::Ollama => "11434",
+        }
+    }
+
+    fn default_endpoint(&self) -> &'static str {
+        match self {
+            EndpointType::LMStudio => "v1/chat/completions",
+            EndpointType::Ollama => "v1/chat/completions",
+        }
+    }
+    
+    fn models_endpoint(&self, endpoint: &str) -> String {
         match self {
             EndpointType::LMStudio => {
-                // For LM Studio, use OpenAI compatible endpoint
-                let base = base_url.trim_end_matches("/v1/chat/completions");
-                format!("{}/v1/models", base)
+                // For LM Studio, always use /v1/models
+                "v1/models".to_string()
             }
             EndpointType::Ollama => {
-                // For Ollama, use /api/tags endpoint
-                let base = base_url.trim_end_matches("/v1/chat/completions");
-                format!("{}/api/tags", base)
+                // For Ollama, use /api/tags but respect any custom base path
+                if endpoint.is_empty() {
+                    "api/tags".to_string()
+                } else {
+                    // Strip the chat completions part if present and add api/tags
+                    let base = endpoint.trim_end_matches("v1/chat/completions");
+                    format!("{}api/tags", base.trim_end_matches('/'))
+                        .trim_start_matches('/')
+                        .to_string()
+                }
             }
         }
     }
 
-    fn chat_endpoint(&self, base_url: &str) -> String {
+    fn chat_endpoint(&self, endpoint: &str) -> String {
         match self {
             EndpointType::LMStudio => {
-                // For LM Studio, use OpenAI compatible endpoint
-                let base = base_url.trim_end_matches("/v1/chat/completions");
-                format!("{}/v1/chat/completions", base)
+                // For LM Studio, always use /v1/chat/completions
+                "v1/chat/completions".to_string()
             }
             EndpointType::Ollama => {
-                // For Ollama, use /api/chat endpoint
-                let base = base_url.trim_end_matches("/v1/chat/completions");
-                format!("{}/api/chat", base)
+                // For Ollama, use /api/chat but respect any custom base path
+                if endpoint.is_empty() {
+                    "api/chat".to_string()
+                } else {
+                    // Strip the chat completions part if present and add api/chat
+                    let base = endpoint.trim_end_matches("v1/chat/completions");
+                    format!("{}api/chat", base.trim_end_matches('/'))
+                        .trim_start_matches('/')
+                        .to_string()
+                }
             }
         }
     }
@@ -112,12 +138,15 @@ struct OllamaModelsResponse {
 #[derive(Clone)]
 struct LLMClient {
     client: Client,
-    api_url: String,
+    protocol: String,
+    server: String,
+    port: String,
+    endpoint: String,
     endpoint_type: EndpointType,
 }
 
 impl LLMClient {
-    fn new(api_url: String, endpoint_type: EndpointType) -> Self {
+    fn new(protocol: String, server: String, port: String, endpoint: String, endpoint_type: EndpointType) -> Self {
         let client = Client::builder()
             .timeout(Duration::from_secs(5))  // 5 second timeout
             .build()
@@ -125,13 +154,22 @@ impl LLMClient {
             
         Self {
             client,
-            api_url,
+            protocol,
+            server,
+            port,
+            endpoint,
             endpoint_type,
         }
     }
 
     async fn list_models(&self) -> Result<Vec<String>> {
-        let models_url = self.endpoint_type.models_endpoint(&self.api_url);
+        let models_url = format!("{}://{}:{}/{}",
+            self.protocol,
+            self.server,
+            self.port,
+            self.endpoint_type.models_endpoint(&self.endpoint)
+        ).trim_end_matches('/').to_string();
+        
         println!("Fetching models from: {}", models_url);
         
         let response = self.client
@@ -172,7 +210,12 @@ impl LLMClient {
     }
 
     async fn chat_stream(&self, chat_history: &[(String, String)], prompt: &str, model: &str, tx: SyncSender<String>) -> Result<()> {
-        let chat_url = self.endpoint_type.chat_endpoint(&self.api_url);
+        let chat_url = format!("{}://{}:{}/{}",
+            self.protocol,
+            self.server,
+            self.port,
+            self.endpoint_type.chat_endpoint(&self.endpoint)
+        ).trim_end_matches('/').to_string();
         
         // Convert chat history to messages format
         let mut messages = Vec::new();
@@ -315,8 +358,10 @@ struct ChatApp {
     response_receiver: Option<mpsc::Receiver<String>>,
     current_response: String,
     show_settings: bool,
-    api_url: String,
-    api_url_edit: String,
+    protocol: String,
+    server: String,
+    port: String,
+    endpoint: String,
     endpoint_type: EndpointType,
     available_models: Vec<String>,
     selected_model: String,
@@ -327,9 +372,12 @@ struct ChatApp {
 impl ChatApp {
     fn new(_cc: &eframe::CreationContext<'_>) -> Self {
         let endpoint_type = EndpointType::Ollama;
-        let api_url = endpoint_type.default_url().to_string();
+        let protocol = "http".to_string();
+        let server = "localhost".to_string();
+        let port = "11434".to_string();
+        let endpoint = "v1/chat/completions".to_string();
         Self {
-            client: LLMClient::new(api_url.clone(), endpoint_type),
+            client: LLMClient::new(protocol.clone(), server.clone(), port.clone(), endpoint.clone(), endpoint_type),
             runtime: Runtime::new().unwrap(),
             input: String::new(),
             chat_history: Vec::new(),
@@ -337,8 +385,10 @@ impl ChatApp {
             response_receiver: None,
             current_response: String::new(),
             show_settings: true,
-            api_url: api_url.clone(),
-            api_url_edit: api_url,
+            protocol,
+            server,
+            port,
+            endpoint,
             endpoint_type,
             available_models: Vec::new(),
             selected_model: "local-model".to_string(),
@@ -414,7 +464,10 @@ impl ChatApp {
 
         let mut show_settings = self.show_settings;
         let endpoint_type = self.endpoint_type;
-        let mut api_url_edit = self.api_url_edit.clone();  // Use the edit buffer, not the current URL
+        let mut protocol = self.protocol.clone();  // Use the edit buffer, not the current URL
+        let mut server = self.server.clone();  // Use the edit buffer, not the current URL
+        let mut port = self.port.clone();  // Use the edit buffer, not the current URL
+        let mut endpoint = self.endpoint.clone();  // Use the edit buffer, not the current URL
         let available_models = self.available_models.clone();
         let selected_model = self.selected_model.clone();
         let models_loading = self.models_loading;
@@ -434,13 +487,17 @@ impl ChatApp {
                     let mut new_endpoint = endpoint_type;  
                     if ui.radio_value(&mut new_endpoint, EndpointType::LMStudio, "OpenAI-Compatible").clicked() {
                         self.endpoint_type = new_endpoint;
-                        self.client = LLMClient::new(self.api_url.clone(), self.endpoint_type);
-                        self.refresh_models(ctx);
+                        self.port = new_endpoint.default_port().to_string();
+                        port = self.port.clone(); // Update the UI-bound variable
+                        self.endpoint = new_endpoint.default_endpoint().to_string();
+                        endpoint = self.endpoint.clone(); // Update the UI-bound variable
                     }
                     if ui.radio_value(&mut new_endpoint, EndpointType::Ollama, "Ollama").clicked() {
                         self.endpoint_type = new_endpoint;
-                        self.client = LLMClient::new(self.api_url.clone(), self.endpoint_type);
-                        self.refresh_models(ctx);
+                        self.port = new_endpoint.default_port().to_string();
+                        port = self.port.clone(); // Update the UI-bound variable
+                        self.endpoint = new_endpoint.default_endpoint().to_string();
+                        endpoint = self.endpoint.clone(); // Update the UI-bound variable
                     }
                 });
                 
@@ -472,35 +529,71 @@ impl ChatApp {
                 
                 ui.add_space(8.0);
                 
-                // API URL input
-                ui.horizontal(|ui| {
-                    ui.label("API URL:");
-                    let response = ui.text_edit_singleline(&mut api_url_edit);
-                    if response.changed() {
-                        // Update the edit buffer in both places
-                        println!("URL edit changed to: {}", api_url_edit);
-                        self.api_url_edit = api_url_edit.clone();
-                    }
-                    
-                    if ui.button("Test Connection").clicked() {
-                        println!("Testing connection to: {}", api_url_edit);
-                        match reqwest::Url::parse(&api_url_edit) {
-                            Ok(_) => {
-                                // Update the actual URL and try to connect
-                                self.api_url = api_url_edit.clone();
-                                self.client = LLMClient::new(self.api_url.clone(), self.endpoint_type);
-                                self.refresh_models(ctx);
-                            }
-                            Err(e) => {
-                                self.error_message = Some(format!("Invalid URL: {}", e));
-                            }
+                // API URL components in a grid layout
+                egui::Grid::new("api_settings_grid")
+                    .num_columns(2)
+                    .spacing([8.0, 4.0])
+                    .show(ui, |ui| {
+                        // Protocol dropdown
+                        ui.label("Protocol:");
+                        egui::ComboBox::from_id_source("protocol_select")
+                            .selected_text(&protocol)
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut protocol, "http".to_string(), "http");
+                                ui.selectable_value(&mut protocol, "https".to_string(), "https");
+                            });
+                        if protocol != self.protocol {
+                            self.protocol = protocol.clone();
+                        }
+                        ui.end_row();
+
+                        // Server
+                        ui.label("Server:");
+                        let response = ui.text_edit_singleline(&mut server);
+                        if response.changed() {
+                            self.server = server.clone();
+                        }
+                        ui.end_row();
+
+                        // Port (with smaller width)
+                        ui.label("Port:");
+                        ui.add(egui::TextEdit::singleline(&mut port)
+                            .desired_width(60.0))
+                            .on_hover_text("Port number");
+                        if port != self.port {
+                            self.port = port.clone();
+                        }
+                        ui.end_row();
+
+                        // Endpoint
+                        ui.label("Endpoint:");
+                        let response = ui.text_edit_singleline(&mut endpoint);
+                        if response.changed() {
+                            self.endpoint = endpoint.clone();
+                        }
+                        ui.end_row();
+                    });
+                
+                ui.add_space(8.0);
+                
+                // Test Connection button
+                if ui.button("Test Connection").clicked() {
+                    println!("Testing connection to: {}://{}:{}/{}", protocol, server, port, endpoint);
+                    match reqwest::Url::parse(&format!("{}://{}:{}/{}", protocol, server, port, endpoint)) {
+                        Ok(_) => {
+                            // Update the actual URL and try to connect
+                            self.client = LLMClient::new(protocol.clone(), server.clone(), port.clone(), endpoint.clone(), self.endpoint_type);
+                            self.refresh_models(ctx);
+                        }
+                        Err(e) => {
+                            self.error_message = Some(format!("Invalid URL: {}", e));
                         }
                     }
-                });
+                }
                 
                 ui.add_space(4.0);
                 ui.label("Current: ").on_hover_text("The URL currently in use");
-                ui.label(&self.api_url);
+                ui.label(&format!("{}://{}:{}/{}", self.protocol, self.server, self.port, self.endpoint));
                 
                 // Display error message if present
                 if let Some(error) = &self.error_message {
@@ -510,15 +603,20 @@ impl ChatApp {
                 ui.separator();
                 
                 if ui.button("Reset to Default").clicked() {
-                    self.api_url = self.endpoint_type.default_url().to_string();
-                    api_url_edit = self.api_url.clone();
-                    self.client = LLMClient::new(self.api_url.clone(), self.endpoint_type);
+                    self.protocol = "http".to_string();
+                    self.server = "localhost".to_string();
+                    self.port = "11434".to_string();
+                    self.endpoint = "v1/chat/completions".to_string();
+                    self.client = LLMClient::new(self.protocol.clone(), self.server.clone(), self.port.clone(), self.endpoint.clone(), self.endpoint_type);
                     self.refresh_models(ctx);
                 }
             });
             
         self.show_settings = show_settings;
-        self.api_url_edit = api_url_edit;
+        self.protocol = protocol;
+        self.server = server;
+        self.port = port;
+        self.endpoint = endpoint;
     }
 }
 
