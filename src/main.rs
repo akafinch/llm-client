@@ -491,6 +491,9 @@ impl ChatApp {
                         port = self.port.clone(); // Update the UI-bound variable
                         self.endpoint = new_endpoint.default_endpoint().to_string();
                         endpoint = self.endpoint.clone(); // Update the UI-bound variable
+                        // Reset model selection
+                        self.selected_model = "local-model".to_string();
+                        self.available_models.clear();
                     }
                     if ui.radio_value(&mut new_endpoint, EndpointType::Ollama, "Ollama").clicked() {
                         self.endpoint_type = new_endpoint;
@@ -498,6 +501,9 @@ impl ChatApp {
                         port = self.port.clone(); // Update the UI-bound variable
                         self.endpoint = new_endpoint.default_endpoint().to_string();
                         endpoint = self.endpoint.clone(); // Update the UI-bound variable
+                        // Reset model selection
+                        self.selected_model = "local-model".to_string();
+                        self.available_models.clear();
                     }
                 });
                 
@@ -581,6 +587,9 @@ impl ChatApp {
                     println!("Testing connection to: {}://{}:{}/{}", protocol, server, port, endpoint);
                     match reqwest::Url::parse(&format!("{}://{}:{}/{}", protocol, server, port, endpoint)) {
                         Ok(_) => {
+                            // Reset model selection before testing new connection
+                            self.selected_model = "local-model".to_string();
+                            self.available_models.clear();
                             // Update the actual URL and try to connect
                             self.client = LLMClient::new(protocol.clone(), server.clone(), port.clone(), endpoint.clone(), self.endpoint_type);
                             self.refresh_models(ctx);
