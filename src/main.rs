@@ -726,7 +726,40 @@ impl eframe::App for ChatApp {
                             if is_error {
                                 ui.label(egui::RichText::new(content).color(egui::Color32::RED));
                             } else {
-                                ui.label(content);
+                                // Split the content by think tags and render each part appropriately
+                                let parts: Vec<&str> = content.split("<think>").collect();
+                                for (i, part) in parts.iter().enumerate() {
+                                    if i == 0 && !part.is_empty() {
+                                        // First part before any think tags
+                                        ui.label(*part);
+                                    } else if !part.is_empty() {
+                                        // Parts that were after a think tag
+                                        let think_parts: Vec<&str> = part.split("</think>").collect();
+                                        if think_parts.len() > 0 {
+                                            // The thinking content
+                                            if !think_parts[0].is_empty() {
+                                                egui::Frame::none()
+                                                    .fill(egui::Color32::from_rgb(47, 45, 56))
+                                                    .inner_margin(egui::style::Margin::same(8.0))
+                                                    .show(ui, |ui| {
+                                                        ui.horizontal(|ui| {
+                                                            ui.label(egui::RichText::new("🤔 Thinking...")
+                                                                .color(egui::Color32::from_rgb(167, 139, 250))
+                                                                .strong());
+                                                        });
+                                                        ui.label(
+                                                            egui::RichText::new(think_parts[0])
+                                                                .color(egui::Color32::LIGHT_GRAY)
+                                                        );
+                                                    });
+                                            }
+                                            // Content after the think section
+                                            if think_parts.len() > 1 && !think_parts[1].is_empty() {
+                                                ui.label(think_parts[1]);
+                                            }
+                                        }
+                                    }
+                                }
                             }
                             ui.add_space(8.0);
                         }
@@ -736,7 +769,36 @@ impl eframe::App for ChatApp {
                             ui.horizontal(|ui| {
                                 ui.label(egui::RichText::new("LLM: ").strong());
                             });
-                            ui.label(&self.current_response);
+                            // Apply the same styling to the current response
+                            let parts: Vec<&str> = self.current_response.split("<think>").collect();
+                            for (i, part) in parts.iter().enumerate() {
+                                if i == 0 && !part.is_empty() {
+                                    ui.label(*part);
+                                } else if !part.is_empty() {
+                                    let think_parts: Vec<&str> = part.split("</think>").collect();
+                                    if think_parts.len() > 0 {
+                                        if !think_parts[0].is_empty() {
+                                            egui::Frame::none()
+                                                .fill(egui::Color32::from_rgb(47, 45, 56))
+                                                .inner_margin(egui::style::Margin::same(8.0))
+                                                .show(ui, |ui| {
+                                                    ui.horizontal(|ui| {
+                                                        ui.label(egui::RichText::new("🤔 Thinking...")
+                                                            .color(egui::Color32::from_rgb(167, 139, 250))
+                                                            .strong());
+                                                    });
+                                                    ui.label(
+                                                        egui::RichText::new(think_parts[0])
+                                                            .color(egui::Color32::LIGHT_GRAY)
+                                                    );
+                                                });
+                                        }
+                                        if think_parts.len() > 1 && !think_parts[1].is_empty() {
+                                            ui.label(think_parts[1]);
+                                        }
+                                    }
+                                }
+                            }
                         }
                     });
 
