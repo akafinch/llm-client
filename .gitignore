@@ -30,3 +30,6 @@ target/
 .Trashes
 ehthumbs.db
 Thumbs.db
+
+# IDE files
+*.code-workspace*
