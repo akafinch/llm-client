@@ -29,6 +29,7 @@ pub struct ChatApp {
     pub selected_model: String,
     pub models_loading: bool,
     pub error_message: Option<String>,
+    pub active_tab: usize,
 }
 
 impl ChatApp {
@@ -57,6 +58,7 @@ impl ChatApp {
             selected_model: "local-model".to_string(),
             models_loading: false,
             error_message: None,
+            active_tab: 0,
         }
     }
 

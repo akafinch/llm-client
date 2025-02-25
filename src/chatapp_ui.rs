@@ -30,57 +30,80 @@ impl eframe::App for ChatApp {
             });
         });
 
+        // Add tab bar below the top menu
+        egui::TopBottomPanel::top("tab_bar").show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.selectable_value(&mut self.active_tab, 0, "Chat");
+                ui.selectable_value(&mut self.active_tab, 1, "Future Tab");
+                // Add more tabs as needed
+            });
+        });
+
         // Settings window
         if self.show_settings {
             self.show_settings_window(ctx);
         }
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            let available_height = ui.available_height();
-            let input_area_height = 100.0; // Fixed height for input area
-            
-            // Use vertical layout to separate chat history and input
-            ui.vertical(|ui| {
-                // Chat history area with calculated height
-                egui::ScrollArea::vertical()
-                    .auto_shrink([false; 2])
-                    .stick_to_bottom(true)
-                    .max_height(available_height - input_area_height)
-                    .show(ui, |ui| {
-                        self.render_chat_history(ui);
-                        self.render_current_response(ui);
-                    });
-
-                ui.add_space(8.0);
-
-                // Input area with fixed height
-                ui.group(|ui| {
-                    ui.set_min_height(input_area_height);
-                    
-                    ui.vertical(|ui| {
-                        // Text input
-                        ui.add_sized(
-                            [ui.available_width(), 70.0],
-                            egui::TextEdit::multiline(&mut self.input)
-                                .hint_text("Type your message here... (Press Enter to send, Shift+Enter for new line)")
-                                .desired_rows(3),
-                        );
-
-                        // Send button
-                        ui.horizontal(|ui| {
-                            if ui.button("Send").clicked() || 
-                               (ui.input(|i| i.key_pressed(egui::Key::Enter) && !i.modifiers.shift)) {
-                                self.send_message(ctx);
-                            }
-                        });
-                    });
-                });
-            });
+            match self.active_tab {
+                0 => self.render_chat_tab(ui, ctx),
+                1 => self.render_future_tab(ui),
+                _ => self.render_chat_tab(ui, ctx), // Default to chat tab
+            }
         });
     }
 }
 
 impl ChatApp {
+    fn render_chat_tab(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        let available_height = ui.available_height();
+        let input_area_height = 100.0; // Fixed height for input area
+        
+        // Use vertical layout to separate chat history and input
+        ui.vertical(|ui| {
+            // Chat history area with calculated height
+            egui::ScrollArea::vertical()
+                .auto_shrink([false; 2])
+                .stick_to_bottom(true)
+                .max_height(available_height - input_area_height)
+                .show(ui, |ui| {
+                    self.render_chat_history(ui);
+                    self.render_current_response(ui);
+                });
+
+            ui.add_space(8.0);
+
+            // Input area with fixed height
+            ui.group(|ui| {
+                ui.set_min_height(input_area_height);
+                
+                ui.vertical(|ui| {
+                    // Text input
+                    ui.add_sized(
+                        [ui.available_width(), 70.0],
+                        egui::TextEdit::multiline(&mut self.input)
+                            .hint_text("Type your message here... (Press Enter to send, Shift+Enter for new line)")
+                            .desired_rows(3),
+                    );
+
+                    // Send button
+                    ui.horizontal(|ui| {
+                        if ui.button("Send").clicked() || 
+                           (ui.input(|i| i.key_pressed(egui::Key::Enter) && !i.modifiers.shift)) {
+                            self.send_message(ctx);
+                        }
+                    });
+                });
+            });
+        });
+    }
+
+    fn render_future_tab(&mut self, ui: &mut egui::Ui) {
+        ui.centered_and_justified(|ui| {
+            ui.heading("Future Feature Coming Soon!");
+        });
+    }
+
     fn render_chat_history(&self, ui: &mut egui::Ui) {
         for (role, content) in &self.chat_history {
             let is_user = role == "user";
