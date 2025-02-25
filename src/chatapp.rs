@@ -2,11 +2,12 @@ use anyhow::Result;
 use eframe::egui;
 use poll_promise::Promise;
 use std::time::Duration;
-use std::sync::mpsc::{self, sync_channel, SyncSender};
+use std::sync::mpsc::{self, sync_channel};
 use tokio::runtime::Runtime;
 
 use crate::endpoint_type::EndpointType;
 use crate::llmclient::LLMClient;
+use crate::sdclient::{SDClient, TextToImageRequest};
 
 const DEFAULT_API_URL: &str = "http://localhost:1234/v1/chat/completions";
 const OLLAMA_API_URL: &str = "http://localhost:11434/v1/chat/completions";
@@ -31,6 +32,14 @@ pub struct ChatApp {
     pub error_message: Option<String>,
     pub active_tab: usize,
     pub active_settings_tab: usize,
+    pub sd_client: SDClient,
+    pub sd_prompt: String,
+    pub sd_generating: bool,
+    pub sd_progress: f32,
+    pub sd_image_bytes: Option<Vec<u8>>,
+    pub sd_image_texture: Option<egui::TextureHandle>,
+    pub sd_pending_generation: Option<Promise<Result<Vec<u8>>>>,
+    pub sd_error_message: Option<String>,
 }
 
 impl ChatApp {
@@ -61,6 +70,14 @@ impl ChatApp {
             error_message: None,
             active_tab: 0,
             active_settings_tab: 0,
+            sd_client: SDClient::new("http://localhost:7860".to_string()),
+            sd_prompt: String::new(),
+            sd_generating: false,
+            sd_progress: 0.0,
+            sd_image_bytes: None,
+            sd_image_texture: None,
+            sd_pending_generation: None,
+            sd_error_message: None,
         }
     }
 
@@ -182,6 +199,110 @@ impl ChatApp {
                 self.pending_response = None;
                 self.response_receiver = None;
                 ctx.request_repaint();
+            }
+        }
+    }
+
+    pub fn generate_sd_image(&mut self, ctx: &egui::Context) {
+        self.sd_generating = true;
+        self.sd_progress = 0.0;
+        self.sd_error_message = None; // Clear any previous errors
+        
+        let prompt = self.sd_prompt.clone();
+        let sd_client = self.sd_client.clone();
+        let ctx_clone = ctx.clone();
+        
+        // Start the image generation in a separate thread
+        self.sd_pending_generation = Some(Promise::spawn_thread("sd_generation", move || {
+            let rt = Runtime::new().unwrap();
+            rt.block_on(async move {
+                // Create the request
+                let request = TextToImageRequest {
+                    prompt,
+                    negative_prompt: Some("blurry, low quality, deformed, distorted".to_string()),
+                    steps: 20,
+                    cfg_scale: 7.0,
+                    width: 512,
+                    height: 512,
+                    sampler_name: "Euler a".to_string(),
+                    seed: None, // Random seed
+                };
+                
+                // Start the generation
+                let image_data_result = sd_client.generate_image(request).await;
+                
+                // Check progress periodically while waiting
+                let progress_client = sd_client.clone();
+                let ctx_progress = ctx_clone.clone();
+                
+                tokio::spawn(async move {
+                    while let Ok(progress) = progress_client.check_progress().await {
+                        // Send progress update to UI
+                        ctx_progress.memory_mut(|mem| {
+                            mem.data.insert_temp(egui::Id::new("sd_progress"), progress);
+                        });
+                        
+                        if progress >= 100.0 {
+                            break;
+                        }
+                        
+                        tokio::time::sleep(Duration::from_millis(500)).await;
+                    }
+                });
+                
+                image_data_result
+            })
+        }));
+    }
+    
+    pub fn save_sd_image(&self) {
+        if let Some(image_data) = &self.sd_image_bytes {
+            // Use a file dialog to select where to save the file
+            // For simplicity, we're just saving to a fixed location
+            std::fs::write("generated_image.png", image_data)
+                .expect("Failed to save image");
+        }
+    }
+    
+    pub fn process_sd_generation(&mut self, ctx: &egui::Context) {
+        // Check for progress updates
+        if let Some(progress) = ctx.memory_mut(|mem| mem.data.remove_temp::<f32>(egui::Id::new("sd_progress"))) {
+            self.sd_progress = progress;
+            ctx.request_repaint();
+        }
+        
+        // Check if generation is complete
+        if let Some(promise) = &self.sd_pending_generation {
+            if let Some(result) = promise.ready() {
+                self.sd_generating = false;
+                
+                match result {
+                    Ok(image_data) => {
+                        self.sd_image_bytes = Some(image_data.clone());
+                        
+                        // Create texture from image bytes
+                        let image = image::load_from_memory(&image_data)
+                            .expect("Failed to create image from data");
+                        let size = [image.width() as _, image.height() as _];
+                        let image_buffer = image.to_rgba8();
+                        let pixels = image_buffer.as_flat_samples();
+                        
+                        self.sd_image_texture = Some(ctx.load_texture(
+                            "generated-image",
+                            egui::ColorImage::from_rgba_unmultiplied(
+                                size,
+                                pixels.as_slice(),
+                            ),
+                            egui::TextureOptions::default(),
+                        ));
+                    },
+                    Err(e) => {
+                        println!("Image generation failed: {}", e);
+                        self.sd_error_message = Some(format!("Error: {}", e));
+                    }
+                }
+                
+                self.sd_pending_generation = None;
             }
         }
     }

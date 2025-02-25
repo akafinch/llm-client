@@ -11,6 +11,9 @@ impl eframe::App for ChatApp {
 
         // Process any incoming response chunks
         self.process_response_chunks(ctx);
+        
+        // Process SD generation progress
+        self.process_sd_generation(ctx);
 
         // Top menu bar
         egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
@@ -34,7 +37,8 @@ impl eframe::App for ChatApp {
         egui::TopBottomPanel::top("tab_bar").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut self.active_tab, 0, "Chat");
-                ui.selectable_value(&mut self.active_tab, 1, "Future Tab");
+                ui.selectable_value(&mut self.active_tab, 1, "Stable Diffusion");
+                ui.selectable_value(&mut self.active_tab, 2, "Future Tab");
                 // Add more tabs as needed
             });
         });
@@ -47,7 +51,8 @@ impl eframe::App for ChatApp {
         egui::CentralPanel::default().show(ctx, |ui| {
             match self.active_tab {
                 0 => self.render_chat_tab(ui, ctx),
-                1 => self.render_future_tab(ui),
+                1 => self.render_stable_diffusion_tab(ui, ctx),
+                2 => self.render_future_tab(ui),
                 _ => self.render_chat_tab(ui, ctx), // Default to chat tab
             }
         });
@@ -95,6 +100,105 @@ impl ChatApp {
                     });
                 });
             });
+        });
+    }
+
+    fn render_stable_diffusion_tab(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        let available_height = ui.available_height();
+        
+        // Divide the space: 70% for image area, 30% for prompt input
+        let image_area_height = available_height * 0.7;
+        let input_area_height = available_height * 0.3;
+        
+        // DEBUG
+        // println!("Available height: {}, Image area: {}, Input area: {}", 
+        //          available_height, image_area_height, input_area_height);
+        
+        ui.vertical(|ui| {
+            // Image display area with fixed height
+            ui.allocate_ui_with_layout(
+                egui::vec2(ui.available_width(), image_area_height),
+                egui::Layout::centered_and_justified(egui::Direction::TopDown),
+                |ui| {
+                    // Add a visible frame around the image area
+                    egui::Frame::dark_canvas(ui.style())
+                        .stroke(egui::Stroke::new(1.0, egui::Color32::WHITE))
+                        .show(ui, |ui| {
+                            if let Some(texture) = &self.sd_image_texture {
+                                // Display the generated image with proper scaling
+                                let size = texture.size_vec2();
+                                let max_size = ui.available_size();
+                                let ratio = (max_size.x / size.x).min(max_size.y / size.y);
+                                let display_size = egui::vec2(size.x * ratio, size.y * ratio);
+                                
+                                // Using the texture handle directly
+                                let image = egui::Image::from_texture(texture)
+                                    .fit_to_exact_size(display_size);
+                                ui.add(image);
+                            } else if self.sd_generating {
+                                // Show progress
+                                ui.spinner();
+                                ui.label(format!("Generating image... {}%", self.sd_progress));
+                            } else if let Some(error) = &self.sd_error_message {
+                                ui.vertical_centered(|ui| {
+                                    ui.colored_label(egui::Color32::RED, "Generation failed!");
+                                    ui.add_space(10.0);
+                                    ui.label(error);
+                                });
+                            } else {
+                                // Initial state
+                                ui.heading("Enter a prompt below to generate an image");
+                            }
+                        });
+                }
+            );
+            
+            // Add a visible separator
+            ui.separator();
+            
+            // Prompt input area with fixed height
+            ui.allocate_ui_with_layout(
+                egui::vec2(ui.available_width(), input_area_height),
+                egui::Layout::top_down(egui::Align::LEFT),
+                |ui| {
+                    // Add a visible frame around the input area
+                    egui::Frame::none()
+                        .fill(egui::Color32::from_rgb(40, 40, 40))
+                        .stroke(egui::Stroke::new(1.0, egui::Color32::WHITE))
+                        .show(ui, |ui| {
+                            ui.heading("Create an image with Stable Diffusion");
+                            
+                            ui.add_space(10.0);
+                            ui.label("Enter your prompt:");
+                            
+                            // Force the text edit to be a reasonable size
+                            let prompt_edit = egui::TextEdit::multiline(&mut self.sd_prompt)
+                                .desired_rows(3)
+                                .hint_text("A beautiful landscape with mountains and lakes...");
+                            
+                            ui.add_sized(
+                                [ui.available_width(), ui.available_height() * 0.5],
+                                prompt_edit
+                            );
+                            
+                            ui.horizontal(|ui| {
+                                if ui.button("Generate Image").clicked() && !self.sd_prompt.is_empty() && !self.sd_generating {
+                                    self.generate_sd_image(ctx);
+                                }
+                                
+                                if let Some(_) = &self.sd_image_bytes {
+                                    if ui.button("Save Image").clicked() {
+                                        self.save_sd_image();
+                                    }
+                                }
+                            });
+                        });
+                }
+            );
+
+            ui.add_space(5.0);
+            ui.label("⚠️ Note: Make sure Automatic1111 WebUI is running with the --api flag enabled");
+            ui.label("Default URL: http://localhost:7860");
         });
     }
 
@@ -365,6 +469,19 @@ impl ChatApp {
             if ui.button("Import Chat History").clicked() {
                 // Placeholder for import functionality
             }
+        });
+
+        ui.group(|ui| {
+            ui.label("Stable Diffusion Settings");
+            ui.add_space(4.0);
+            
+            ui.horizontal(|ui| {
+                ui.label("API URL:");
+                let mut api_url = self.sd_client.base_url.clone();
+                if ui.text_edit_singleline(&mut api_url).changed() {
+                    self.sd_client = crate::sdclient::SDClient::new(api_url);
+                }
+            });
         });
     }
 } 

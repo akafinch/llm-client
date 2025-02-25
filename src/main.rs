@@ -7,6 +7,7 @@ mod endpoint_type;
 mod llmclient;
 mod chatapp;
 mod chatapp_ui;
+mod sdclient;
 
 use chatapp::ChatApp;
 
