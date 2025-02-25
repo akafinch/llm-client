@@ -7,7 +7,7 @@ use tokio::runtime::Runtime;
 
 use crate::endpoint_type::EndpointType;
 use crate::llmclient::LLMClient;
-use crate::sdclient::{SDClient, TextToImageRequest};
+use crate::sdclient::{SDClient, TextToImageRequest, SDModel, LoRA, Sampler};
 
 const DEFAULT_API_URL: &str = "http://localhost:1234/v1/chat/completions";
 const OLLAMA_API_URL: &str = "http://localhost:11434/v1/chat/completions";
@@ -40,6 +40,21 @@ pub struct ChatApp {
     pub sd_image_texture: Option<egui::TextureHandle>,
     pub sd_pending_generation: Option<Promise<Result<Vec<u8>>>>,
     pub sd_error_message: Option<String>,
+    pub sd_models: Vec<SDModel>,
+    pub sd_selected_model: String,
+    pub sd_loras: Vec<LoRA>,
+    pub sd_selected_lora: Option<String>,
+    pub sd_lora_weight: f32,
+    pub sd_samplers: Vec<Sampler>,
+    pub sd_selected_sampler: String,
+    pub sd_steps: u32,
+    pub sd_cfg_scale: f32,
+    pub sd_width: u32,
+    pub sd_height: u32,
+    pub sd_negative_prompt: String,
+    pub sd_models_loading: bool,
+    pub sd_loras_loading: bool,
+    pub sd_samplers_loading: bool,
 }
 
 impl ChatApp {
@@ -78,6 +93,21 @@ impl ChatApp {
             sd_image_texture: None,
             sd_pending_generation: None,
             sd_error_message: None,
+            sd_models: Vec::new(),
+            sd_selected_model: "".to_string(),
+            sd_loras: Vec::new(),
+            sd_selected_lora: None,
+            sd_lora_weight: 0.7,
+            sd_samplers: Vec::new(),
+            sd_selected_sampler: "Euler a".to_string(),
+            sd_steps: 20,
+            sd_cfg_scale: 7.0,
+            sd_width: 512,
+            sd_height: 512,
+            sd_negative_prompt: "blurry, low quality, deformed, distorted".to_string(),
+            sd_models_loading: false,
+            sd_loras_loading: false,
+            sd_samplers_loading: false,
         }
     }
 
@@ -203,12 +233,136 @@ impl ChatApp {
         }
     }
 
+    pub fn load_sd_options(&mut self, ctx: &egui::Context) {
+        // Loading models
+        if self.sd_models.is_empty() && !self.sd_models_loading {
+            self.sd_models_loading = true;
+            
+            let sd_client = self.sd_client.clone();
+            let ctx_clone = ctx.clone();
+            
+            tokio::spawn(async move {
+                match sd_client.get_available_models().await {
+                    Ok(models) => {
+                        ctx_clone.memory_mut(|mem| {
+                            mem.data.insert_temp(egui::Id::new("sd_models"), models);
+                        });
+                    }
+                    Err(e) => {
+                        println!("Failed to fetch SD models: {}", e);
+                        ctx_clone.memory_mut(|mem| {
+                            mem.data.insert_temp(egui::Id::new("sd_models_error"), format!("{}", e));
+                        });
+                    }
+                }
+            });
+        }
+        
+        // Loading LoRAs
+        if self.sd_loras.is_empty() && !self.sd_loras_loading {
+            self.sd_loras_loading = true;
+            
+            let sd_client = self.sd_client.clone();
+            let ctx_clone = ctx.clone();
+            
+            tokio::spawn(async move {
+                match sd_client.get_available_loras().await {
+                    Ok(loras) => {
+                        ctx_clone.memory_mut(|mem| {
+                            mem.data.insert_temp(egui::Id::new("sd_loras"), loras);
+                        });
+                    }
+                    Err(e) => {
+                        println!("Failed to fetch LoRAs: {}", e);
+                        ctx_clone.memory_mut(|mem| {
+                            mem.data.insert_temp(egui::Id::new("sd_loras_error"), format!("{}", e));
+                        });
+                    }
+                }
+            });
+        }
+        
+        // Loading samplers
+        if self.sd_samplers.is_empty() && !self.sd_samplers_loading {
+            self.sd_samplers_loading = true;
+            
+            let sd_client = self.sd_client.clone();
+            let ctx_clone = ctx.clone();
+            
+            tokio::spawn(async move {
+                match sd_client.get_available_samplers().await {
+                    Ok(samplers) => {
+                        ctx_clone.memory_mut(|mem| {
+                            mem.data.insert_temp(egui::Id::new("sd_samplers"), samplers);
+                        });
+                    }
+                    Err(e) => {
+                        println!("Failed to fetch samplers: {}", e);
+                        ctx_clone.memory_mut(|mem| {
+                            mem.data.insert_temp(egui::Id::new("sd_samplers_error"), format!("{}", e));
+                        });
+                    }
+                }
+            });
+        }
+        
+        // Check if data is ready and process it
+        if let Some(models) = ctx.memory_mut(|mem| mem.data.remove_temp::<Vec<SDModel>>(egui::Id::new("sd_models"))) {
+            self.sd_models = models;
+            self.sd_models_loading = false;
+            
+            if !self.sd_models.is_empty() && self.sd_selected_model.is_empty() {
+                self.sd_selected_model = self.sd_models[0].model_name.clone();
+            }
+        }
+        
+        if let Some(loras) = ctx.memory_mut(|mem| mem.data.remove_temp::<Vec<LoRA>>(egui::Id::new("sd_loras"))) {
+            self.sd_loras = loras;
+            self.sd_loras_loading = false;
+        }
+        
+        if let Some(samplers) = ctx.memory_mut(|mem| mem.data.remove_temp::<Vec<Sampler>>(egui::Id::new("sd_samplers"))) {
+            self.sd_samplers = samplers;
+            self.sd_samplers_loading = false;
+            
+            // Select Euler a by default if available
+            if self.sd_selected_sampler.is_empty() {
+                self.sd_selected_sampler = self.sd_samplers
+                    .iter()
+                    .find(|s| s.name == "Euler a")
+                    .map(|s| s.name.clone())
+                    .unwrap_or_else(|| {
+                        if !self.sd_samplers.is_empty() {
+                            self.sd_samplers[0].name.clone()
+                        } else {
+                            "Euler a".to_string()
+                        }
+                    });
+            }
+        }
+    }
+
     pub fn generate_sd_image(&mut self, ctx: &egui::Context) {
         self.sd_generating = true;
         self.sd_progress = 0.0;
         self.sd_error_message = None; // Clear any previous errors
         
-        let prompt = self.sd_prompt.clone();
+        let mut prompt = self.sd_prompt.clone();
+        let negative_prompt = self.sd_negative_prompt.clone();
+        let steps = self.sd_steps;
+        let cfg_scale = self.sd_cfg_scale;
+        let width = self.sd_width;
+        let height = self.sd_height;
+        let sampler_name = self.sd_selected_sampler.clone();
+        let model_name = self.sd_selected_model.clone();
+        
+        // Add LoRA to prompt instead of using alwayson_scripts
+        if let Some(lora_name) = &self.sd_selected_lora {
+            // Add the LoRA to the prompt with the weight
+            // Format: <lora:name:weight>
+            prompt = format!("{} <lora:{}:{:.1}>", prompt, lora_name, self.sd_lora_weight);
+        }
+        
         let sd_client = self.sd_client.clone();
         let ctx_clone = ctx.clone();
         
@@ -216,17 +370,29 @@ impl ChatApp {
         self.sd_pending_generation = Some(Promise::spawn_thread("sd_generation", move || {
             let rt = Runtime::new().unwrap();
             rt.block_on(async move {
-                // Create the request
+                // Change model if needed
+                if !model_name.is_empty() {
+                    if let Err(e) = sd_client.change_model(&model_name).await {
+                        println!("Failed to change model: {}", e);
+                        return Err(anyhow::anyhow!("Failed to change model: {}", e));
+                    }
+                }
+                
+                // Create the request (without alwayson_scripts)
                 let request = TextToImageRequest {
                     prompt,
-                    negative_prompt: Some("blurry, low quality, deformed, distorted".to_string()),
-                    steps: 20,
-                    cfg_scale: 7.0,
-                    width: 512,
-                    height: 512,
-                    sampler_name: "Euler a".to_string(),
+                    negative_prompt: Some(negative_prompt),
+                    steps,
+                    cfg_scale,
+                    width,
+                    height,
+                    sampler_name,
                     seed: None, // Random seed
+                    alwayson_scripts: serde_json::json!({}), // Empty, since we're using prompt-based LoRA
                 };
+                
+                // Log the actual request for debugging
+                println!("Sending request: {}", serde_json::to_string_pretty(&request).unwrap_or_default());
                 
                 // Start the generation
                 let image_data_result = sd_client.generate_image(request).await;

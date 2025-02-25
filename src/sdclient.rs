@@ -17,6 +17,14 @@ pub struct TextToImageRequest {
     pub sampler_name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub seed: Option<i64>,
+    #[serde(skip_serializing_if = "TextToImageRequest::is_empty_value")]
+    pub alwayson_scripts: serde_json::Value,
+}
+
+impl TextToImageRequest {
+    fn is_empty_value(value: &serde_json::Value) -> bool {
+        value.as_object().map_or(false, |obj| obj.is_empty())
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -31,6 +39,31 @@ pub struct ProgressResponse {
     pub progress: f32,        // 0-1 progress value
     pub eta_relative: f32,    // estimated time remaining in seconds
     pub state: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct SDModel {
+    pub title: String,
+    pub model_name: String,
+    pub hash: Option<String>,
+    pub sha256: Option<String>,
+    pub filename: Option<String>,
+    pub config: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct LoRA {
+    pub name: String,
+    pub alias: Option<String>,
+    pub path: Option<String>,
+    pub metadata: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct Sampler {
+    pub name: String,
+    pub aliases: Option<Vec<String>>,
+    pub options: Option<serde_json::Value>,
 }
 
 #[derive(Clone)]
@@ -52,10 +85,105 @@ impl SDClient {
         }
     }
     
+    pub async fn get_available_models(&self) -> Result<Vec<SDModel>> {
+        let url = format!("{}/sdapi/v1/sd-models", self.base_url.trim_end_matches('/'));
+        
+        println!("Fetching available SD models from: {}", url);
+        
+        let response = self.client
+            .get(&url)
+            .send()
+            .await
+            .context("Failed to fetch available SD models")?;
+            
+        if !response.status().is_success() {
+            return Err(anyhow::anyhow!("Failed to fetch models: {}", response.status()));
+        }
+        
+        let models: Vec<SDModel> = response
+            .json()
+            .await
+            .context("Failed to parse SD models response")?;
+            
+        Ok(models)
+    }
+    
+    pub async fn get_available_loras(&self) -> Result<Vec<LoRA>> {
+        let url = format!("{}/sdapi/v1/loras", self.base_url.trim_end_matches('/'));
+        
+        println!("Fetching available LoRAs from: {}", url);
+        
+        let response = self.client
+            .get(&url)
+            .send()
+            .await
+            .context("Failed to fetch available LoRAs")?;
+            
+        if !response.status().is_success() {
+            return Err(anyhow::anyhow!("Failed to fetch LoRAs: {}", response.status()));
+        }
+        
+        let loras: Vec<LoRA> = response
+            .json()
+            .await
+            .context("Failed to parse LoRAs response")?;
+            
+        Ok(loras)
+    }
+    
+    pub async fn get_available_samplers(&self) -> Result<Vec<Sampler>> {
+        let url = format!("{}/sdapi/v1/samplers", self.base_url.trim_end_matches('/'));
+        
+        println!("Fetching available samplers from: {}", url);
+        
+        let response = self.client
+            .get(&url)
+            .send()
+            .await
+            .context("Failed to fetch available samplers")?;
+            
+        if !response.status().is_success() {
+            return Err(anyhow::anyhow!("Failed to fetch samplers: {}", response.status()));
+        }
+        
+        let samplers: Vec<Sampler> = response
+            .json()
+            .await
+            .context("Failed to parse samplers response")?;
+            
+        Ok(samplers)
+    }
+    
+    pub async fn change_model(&self, model_name: &str) -> Result<()> {
+        let url = format!("{}/sdapi/v1/options", self.base_url.trim_end_matches('/'));
+        
+        println!("Changing model to: {}", model_name);
+        
+        let request_body = serde_json::json!({
+            "sd_model_checkpoint": model_name
+        });
+        
+        let response = self.client
+            .post(&url)
+            .json(&request_body)
+            .send()
+            .await
+            .context("Failed to change model")?;
+            
+        if !response.status().is_success() {
+            return Err(anyhow::anyhow!("Failed to change model: {}", response.status()));
+        }
+        
+        Ok(())
+    }
+    
     pub async fn generate_image(&self, request: TextToImageRequest) -> Result<Vec<u8>> {
         let url = format!("{}/sdapi/v1/txt2img", self.base_url.trim_end_matches('/'));
         
         println!("Sending request to Stable Diffusion API: {}", url);
+        
+        // Print the request as JSON for debugging
+        println!("Request payload: {}", serde_json::to_string_pretty(&request).unwrap_or_default());
         
         let response = self.client
             .post(&url)
@@ -69,7 +197,7 @@ impl SDClient {
             let error_text = response.text().await.unwrap_or_else(|_| "No error details".to_string());
             
             return Err(anyhow::anyhow!(
-                "Stable Diffusion API returned error {}. \nDetails: {}\n\nCheck that:\n1. Automatic1111 WebUI is running\n2. The --api flag is enabled\n3. The URL is correct (default: http://localhost:7860)",
+                "Stable Diffusion API returned error {}. \nDetails: {}\n\nCheck that:\n1. Automatic1111 WebUI is running\n2. The --api flag is enabled\n3. The LoRA format is correct for your installation\n4. The URL is correct (default: http://localhost:7860)",
                 status, error_text
             ));
         }

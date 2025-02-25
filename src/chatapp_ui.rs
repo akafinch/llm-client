@@ -6,7 +6,7 @@ use crate::chatapp::ChatApp;
 
 impl eframe::App for ChatApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Request a repaint after a short delay (16ms = ~60 FPS)
+        // Request a repaint after a short delay
         ctx.request_repaint_after(Duration::from_millis(16));
 
         // Process any incoming response chunks
@@ -104,15 +104,14 @@ impl ChatApp {
     }
 
     fn render_stable_diffusion_tab(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        // Load SD options if not already loaded
+        self.load_sd_options(ctx);
+        
         let available_height = ui.available_height();
         
         // Divide the space: 70% for image area, 30% for prompt input
         let image_area_height = available_height * 0.7;
         let input_area_height = available_height * 0.3;
-        
-        // DEBUG
-        // println!("Available height: {}, Image area: {}, Input area: {}", 
-        //          available_height, image_area_height, input_area_height);
         
         ui.vertical(|ui| {
             // Image display area with fixed height
@@ -168,18 +167,141 @@ impl ChatApp {
                         .show(ui, |ui| {
                             ui.heading("Create an image with Stable Diffusion");
                             
-                            ui.add_space(10.0);
-                            ui.label("Enter your prompt:");
+                            // Two column layout for controls
+                            egui::Grid::new("sd_input_grid")
+                                .num_columns(2)
+                                .spacing([10.0, 10.0])
+                                .show(ui, |ui| {
+                                    // Model selection
+                                    ui.label("Model:");
+                                    
+                                    if self.sd_models_loading {
+                                        ui.spinner();
+                                        ui.end_row();
+                                    } else {
+                                        egui::ComboBox::from_id_source("sd_model_select")
+                                            .selected_text(
+                                                self.sd_models.iter()
+                                                    .find(|m| m.model_name == self.sd_selected_model)
+                                                    .map(|m| m.title.clone())
+                                                    .unwrap_or_else(|| "Select model...".to_string())
+                                            )
+                                            .show_ui(ui, |ui| {
+                                                for model in &self.sd_models {
+                                                    ui.selectable_value(
+                                                        &mut self.sd_selected_model,
+                                                        model.model_name.clone(),
+                                                        &model.title
+                                                    );
+                                                }
+                                            });
+                                        ui.end_row();
+                                    }
+                                    
+                                    // LoRA selection
+                                    ui.label("LoRA:");
+                                    
+                                    if self.sd_loras_loading {
+                                        ui.spinner();
+                                        ui.end_row();
+                                    } else {
+                                        let mut display_name = "None".to_string();
+                                        
+                                        if let Some(lora_name) = &self.sd_selected_lora {
+                                            if let Some(lora) = self.sd_loras.iter().find(|l| l.name == *lora_name) {
+                                                display_name = lora.alias.clone().unwrap_or_else(|| lora.name.clone());
+                                            }
+                                        }
+                                        
+                                        egui::ComboBox::from_id_source("sd_lora_select")
+                                            .selected_text(display_name)
+                                            .show_ui(ui, |ui| {
+                                                if ui.selectable_label(self.sd_selected_lora.is_none(), "None").clicked() {
+                                                    self.sd_selected_lora = None;
+                                                }
+                                                
+                                                for lora in &self.sd_loras {
+                                                    let name = lora.alias.clone().unwrap_or_else(|| lora.name.clone());
+                                                    if ui.selectable_label(
+                                                        self.sd_selected_lora.as_ref() == Some(&lora.name),
+                                                        name
+                                                    ).clicked() {
+                                                        self.sd_selected_lora = Some(lora.name.clone());
+                                                    }
+                                                }
+                                            });
+                                        ui.end_row();
+                                    }
+                                    
+                                    // LoRA weight slider (only show if LoRA is selected)
+                                    if self.sd_selected_lora.is_some() {
+                                        ui.label("LoRA weight:");
+                                        ui.add(egui::Slider::new(&mut self.sd_lora_weight, 0.1..=1.0).text(""));
+                                        ui.end_row();
+                                    }
+                                    
+                                    // Sampler selection
+                                    ui.label("Sampler:");
+                                    
+                                    if self.sd_samplers_loading {
+                                        ui.spinner();
+                                        ui.end_row();
+                                    } else {
+                                        egui::ComboBox::from_id_source("sd_sampler_select")
+                                            .selected_text(&self.sd_selected_sampler)
+                                            .show_ui(ui, |ui| {
+                                                for sampler in &self.sd_samplers {
+                                                    ui.selectable_value(
+                                                        &mut self.sd_selected_sampler,
+                                                        sampler.name.clone(),
+                                                        &sampler.name
+                                                    );
+                                                }
+                                            });
+                                        ui.end_row();
+                                    }
+                                    
+                                    // Steps slider
+                                    ui.label("Steps:");
+                                    ui.add(egui::Slider::new(&mut self.sd_steps, 10..=50).text(""));
+                                    ui.end_row();
+                                    
+                                    // CFG Scale slider
+                                    ui.label("CFG Scale:");
+                                    ui.add(egui::Slider::new(&mut self.sd_cfg_scale, 1.0..=15.0).text(""));
+                                    ui.end_row();
+                                    
+                                    // Width and Height
+                                    ui.label("Size:");
+                                    ui.horizontal(|ui| {
+                                        ui.add(egui::DragValue::new(&mut self.sd_width).speed(32).clamp_range(256..=1024));
+                                        ui.label("×");
+                                        ui.add(egui::DragValue::new(&mut self.sd_height).speed(32).clamp_range(256..=1024));
+                                    });
+                                    ui.end_row();
+                                });
                             
-                            // Force the text edit to be a reasonable size
-                            let prompt_edit = egui::TextEdit::multiline(&mut self.sd_prompt)
-                                .desired_rows(3)
-                                .hint_text("A beautiful landscape with mountains and lakes...");
+                            ui.add_space(10.0);
+                            
+                            // Prompt and negative prompt
+                            ui.label("Prompt:");
                             
                             ui.add_sized(
-                                [ui.available_width(), ui.available_height() * 0.5],
-                                prompt_edit
+                                [ui.available_width(), 60.0],
+                                egui::TextEdit::multiline(&mut self.sd_prompt)
+                                    .hint_text("A beautiful landscape with mountains and lakes...")
+                                    .desired_rows(2)
                             );
+                            
+                            ui.label("Negative prompt:");
+                            ui.add_sized(
+                                [ui.available_width(), 40.0],
+                                egui::TextEdit::multiline(&mut self.sd_negative_prompt)
+                                    .hint_text("blurry, low quality...")
+                                    .desired_rows(1)
+                            );
+                            
+                            ui.add_space(10.0);
                             
                             ui.horizontal(|ui| {
                                 if ui.button("Generate Image").clicked() && !self.sd_prompt.is_empty() && !self.sd_generating {
