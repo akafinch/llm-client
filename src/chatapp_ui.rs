@@ -189,13 +189,27 @@ impl ChatApp {
             .resizable(false)
             .default_width(400.0)
             .show(ctx, |ui| {
-                self.render_settings_content(ui, ctx);
+                // Add tab bar at the top of the settings window
+                ui.horizontal(|ui| {
+                    ui.selectable_value(&mut self.active_settings_tab, 0, "API Configuration");
+                    ui.selectable_value(&mut self.active_settings_tab, 1, "Advanced Settings");
+                });
+                
+                ui.separator();
+                ui.add_space(8.0);
+                
+                // Display the active settings tab content
+                match self.active_settings_tab {
+                    0 => self.render_api_settings_tab(ui, ctx),
+                    1 => self.render_advanced_settings_tab(ui),
+                    _ => self.render_api_settings_tab(ui, ctx), // Default to API settings
+                }
             });
             
         self.show_settings = show_settings;
     }
 
-    fn render_settings_content(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+    fn render_api_settings_tab(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.heading("API Configuration");
         ui.add_space(8.0);
         
@@ -305,5 +319,52 @@ impl ChatApp {
             self.reset_to_defaults();
             self.refresh_models(ctx);
         }
+    }
+    
+    fn render_advanced_settings_tab(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Advanced Settings");
+        ui.add_space(8.0);
+        
+        // This is a placeholder - add your advanced settings here
+        ui.label("These settings will be implemented in a future update.");
+        
+        // Example settings that could be added here:
+        ui.group(|ui| {
+            ui.label("Model Parameters");
+            ui.add_space(4.0);
+            
+            let mut placeholder_temp = 0.7;
+            ui.horizontal(|ui| {
+                ui.label("Temperature:");
+                ui.add(egui::Slider::new(&mut placeholder_temp, 0.0..=2.0).text(""));
+            });
+            
+            let mut placeholder_tokens = 2048;
+            ui.horizontal(|ui| {
+                ui.label("Max Tokens:");
+                ui.add(egui::Slider::new(&mut placeholder_tokens, 256..=4096).text(""));
+            });
+            
+            let mut placeholder_presence = 0.0;
+            ui.horizontal(|ui| {
+                ui.label("Presence Penalty:");
+                ui.add(egui::Slider::new(&mut placeholder_presence, -2.0..=2.0).text(""));
+            });
+        });
+        
+        ui.add_space(8.0);
+        
+        ui.group(|ui| {
+            ui.label("Chat History");
+            ui.add_space(4.0);
+            
+            if ui.button("Export Chat History").clicked() {
+                // Placeholder for export functionality
+            }
+            
+            if ui.button("Import Chat History").clicked() {
+                // Placeholder for import functionality
+            }
+        });
     }
 } 

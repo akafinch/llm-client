@@ -30,6 +30,7 @@ pub struct ChatApp {
     pub models_loading: bool,
     pub error_message: Option<String>,
     pub active_tab: usize,
+    pub active_settings_tab: usize,
 }
 
 impl ChatApp {
@@ -59,6 +60,7 @@ impl ChatApp {
             models_loading: false,
             error_message: None,
             active_tab: 0,
+            active_settings_tab: 0,
         }
     }
 
