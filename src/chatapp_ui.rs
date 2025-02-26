@@ -104,8 +104,10 @@ impl ChatApp {
     }
 
     fn render_stable_diffusion_tab(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        // Load SD options if not already loaded
-        self.load_sd_options(ctx);
+        // Only load SD options if not in the settings window
+        if !self.show_settings {
+            self.load_sd_options(ctx);
+        }
         
         let available_height = ui.available_height();
         
@@ -167,122 +169,6 @@ impl ChatApp {
                         .show(ui, |ui| {
                             ui.heading("Create an image with Stable Diffusion");
                             
-                            // Two column layout for controls
-                            egui::Grid::new("sd_input_grid")
-                                .num_columns(2)
-                                .spacing([10.0, 10.0])
-                                .show(ui, |ui| {
-                                    // Model selection
-                                    ui.label("Model:");
-                                    
-                                    if self.sd_models_loading {
-                                        ui.spinner();
-                                        ui.end_row();
-                                    } else {
-                                        egui::ComboBox::from_id_source("sd_model_select")
-                                            .selected_text(
-                                                self.sd_models.iter()
-                                                    .find(|m| m.model_name == self.sd_selected_model)
-                                                    .map(|m| m.title.clone())
-                                                    .unwrap_or_else(|| "Select model...".to_string())
-                                            )
-                                            .show_ui(ui, |ui| {
-                                                for model in &self.sd_models {
-                                                    ui.selectable_value(
-                                                        &mut self.sd_selected_model,
-                                                        model.model_name.clone(),
-                                                        &model.title
-                                                    );
-                                                }
-                                            });
-                                        ui.end_row();
-                                    }
-                                    
-                                    // LoRA selection
-                                    ui.label("LoRA:");
-                                    
-                                    if self.sd_loras_loading {
-                                        ui.spinner();
-                                        ui.end_row();
-                                    } else {
-                                        let mut display_name = "None".to_string();
-                                        
-                                        if let Some(lora_name) = &self.sd_selected_lora {
-                                            if let Some(lora) = self.sd_loras.iter().find(|l| l.name == *lora_name) {
-                                                display_name = lora.alias.clone().unwrap_or_else(|| lora.name.clone());
-                                            }
-                                        }
-                                        
-                                        egui::ComboBox::from_id_source("sd_lora_select")
-                                            .selected_text(display_name)
-                                            .show_ui(ui, |ui| {
-                                                if ui.selectable_label(self.sd_selected_lora.is_none(), "None").clicked() {
-                                                    self.sd_selected_lora = None;
-                                                }
-                                                
-                                                for lora in &self.sd_loras {
-                                                    let name = lora.alias.clone().unwrap_or_else(|| lora.name.clone());
-                                                    if ui.selectable_label(
-                                                        self.sd_selected_lora.as_ref() == Some(&lora.name),
-                                                        name
-                                                    ).clicked() {
-                                                        self.sd_selected_lora = Some(lora.name.clone());
-                                                    }
-                                                }
-                                            });
-                                        ui.end_row();
-                                    }
-                                    
-                                    // LoRA weight slider (only show if LoRA is selected)
-                                    if self.sd_selected_lora.is_some() {
-                                        ui.label("LoRA weight:");
-                                        ui.add(egui::Slider::new(&mut self.sd_lora_weight, 0.1..=1.0).text(""));
-                                        ui.end_row();
-                                    }
-                                    
-                                    // Sampler selection
-                                    ui.label("Sampler:");
-                                    
-                                    if self.sd_samplers_loading {
-                                        ui.spinner();
-                                        ui.end_row();
-                                    } else {
-                                        egui::ComboBox::from_id_source("sd_sampler_select")
-                                            .selected_text(&self.sd_selected_sampler)
-                                            .show_ui(ui, |ui| {
-                                                for sampler in &self.sd_samplers {
-                                                    ui.selectable_value(
-                                                        &mut self.sd_selected_sampler,
-                                                        sampler.name.clone(),
-                                                        &sampler.name
-                                                    );
-                                                }
-                                            });
-                                        ui.end_row();
-                                    }
-                                    
-                                    // Steps slider
-                                    ui.label("Steps:");
-                                    ui.add(egui::Slider::new(&mut self.sd_steps, 10..=50).text(""));
-                                    ui.end_row();
-                                    
-                                    // CFG Scale slider
-                                    ui.label("CFG Scale:");
-                                    ui.add(egui::Slider::new(&mut self.sd_cfg_scale, 1.0..=15.0).text(""));
-                                    ui.end_row();
-                                    
-                                    // Width and Height
-                                    ui.label("Size:");
-                                    ui.horizontal(|ui| {
-                                        ui.add(egui::DragValue::new(&mut self.sd_width).speed(32).clamp_range(256..=1024));
-                                        ui.label("×");
-                                        ui.add(egui::DragValue::new(&mut self.sd_height).speed(32).clamp_range(256..=1024));
-                                    });
-                                    ui.end_row();
-                                });
-                            
-                            ui.add_space(10.0);
-                            
                             // Prompt and negative prompt
                             ui.label("Prompt:");
                             
@@ -319,8 +205,7 @@ impl ChatApp {
             );
 
             ui.add_space(5.0);
-            ui.label("⚠️ Note: Make sure Automatic1111 WebUI is running with the --api flag enabled");
-            ui.label("Default URL: http://localhost:7860");
+            ui.label("⚠️ Note: SD settings can be configured in the Settings menu (☰ button)");
         });
     }
 
@@ -419,6 +304,7 @@ impl ChatApp {
                 ui.horizontal(|ui| {
                     ui.selectable_value(&mut self.active_settings_tab, 0, "API Configuration");
                     ui.selectable_value(&mut self.active_settings_tab, 1, "Advanced Settings");
+                    ui.selectable_value(&mut self.active_settings_tab, 2, "Stable Diffusion");
                 });
                 
                 ui.separator();
@@ -428,6 +314,7 @@ impl ChatApp {
                 match self.active_settings_tab {
                     0 => self.render_api_settings_tab(ui, ctx),
                     1 => self.render_advanced_settings_tab(ui),
+                    2 => self.render_sd_settings_tab(ui, ctx),
                     _ => self.render_api_settings_tab(ui, ctx), // Default to API settings
                 }
             });
@@ -592,18 +479,157 @@ impl ChatApp {
                 // Placeholder for import functionality
             }
         });
+    }
 
+    fn render_sd_settings_tab(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        // Implementation of the SD settings tab
+        ui.heading("Stable Diffusion Settings");
+        ui.add_space(8.0);
+        
+        // API URL setting (moved from advanced settings)
         ui.group(|ui| {
-            ui.label("Stable Diffusion Settings");
+            ui.label("Connection Settings");
             ui.add_space(4.0);
             
             ui.horizontal(|ui| {
                 ui.label("API URL:");
                 let mut api_url = self.sd_client.base_url.clone();
-                if ui.text_edit_singleline(&mut api_url).changed() {
+                let url_changed = ui.text_edit_singleline(&mut api_url).changed();
+                if url_changed {
                     self.sd_client = crate::sdclient::SDClient::new(api_url);
                 }
+                
+                // Add refresh button next to URL field
+                if ui.button("⟳").on_hover_text("Load models and options from API").clicked() {
+                    self.load_sd_options(ctx);
+                }
             });
+            
+            ui.add_space(4.0);
+            ui.label("⚠️ Note: Make sure Automatic1111 WebUI is running with the --api flag enabled");
+            ui.label("Default URL: http://localhost:7860");
+        });
+        
+        ui.add_space(8.0);
+        
+        // Model settings
+        ui.group(|ui| {
+            ui.label("Model Settings");
+            ui.add_space(4.0);
+            
+            // Two column layout for controls
+            egui::Grid::new("sd_settings_grid")
+                .num_columns(2)
+                .spacing([10.0, 10.0])
+                .show(ui, |ui| {
+                    // Model selection
+                    ui.label("Model:");
+                    
+                    if self.sd_models_loading {
+                        ui.spinner();
+                        ui.end_row();
+                    } else {
+                        egui::ComboBox::from_id_source("sd_model_select")
+                            .selected_text(
+                                self.sd_models.iter()
+                                    .find(|m| m.model_name == self.sd_selected_model)
+                                    .map(|m| m.title.clone())
+                                    .unwrap_or_else(|| "Select model...".to_string())
+                            )
+                            .show_ui(ui, |ui| {
+                                for model in &self.sd_models {
+                                    ui.selectable_value(
+                                        &mut self.sd_selected_model,
+                                        model.model_name.clone(),
+                                        &model.title
+                                    );
+                                }
+                            });
+                        ui.end_row();
+                    }
+                    
+                    // LoRA selection
+                    ui.label("LoRA:");
+                    
+                    if self.sd_loras_loading {
+                        ui.spinner();
+                        ui.end_row();
+                    } else {
+                        let mut display_name = "None".to_string();
+                        
+                        if let Some(lora_name) = &self.sd_selected_lora {
+                            if let Some(lora) = self.sd_loras.iter().find(|l| l.name == *lora_name) {
+                                display_name = lora.alias.clone().unwrap_or_else(|| lora.name.clone());
+                            }
+                        }
+                        
+                        egui::ComboBox::from_id_source("sd_lora_select")
+                            .selected_text(display_name)
+                            .show_ui(ui, |ui| {
+                                if ui.selectable_label(self.sd_selected_lora.is_none(), "None").clicked() {
+                                    self.sd_selected_lora = None;
+                                }
+                                
+                                for lora in &self.sd_loras {
+                                    let name = lora.alias.clone().unwrap_or_else(|| lora.name.clone());
+                                    if ui.selectable_label(
+                                        self.sd_selected_lora.as_ref() == Some(&lora.name),
+                                        name
+                                    ).clicked() {
+                                        self.sd_selected_lora = Some(lora.name.clone());
+                                    }
+                                }
+                            });
+                        ui.end_row();
+                    }
+                    
+                    // LoRA weight slider (only show if LoRA is selected)
+                    if self.sd_selected_lora.is_some() {
+                        ui.label("LoRA weight:");
+                        ui.add(egui::Slider::new(&mut self.sd_lora_weight, 0.1..=1.0).text(""));
+                        ui.end_row();
+                    }
+                    
+                    // Sampler selection
+                    ui.label("Sampler:");
+                    
+                    if self.sd_samplers_loading {
+                        ui.spinner();
+                        ui.end_row();
+                    } else {
+                        egui::ComboBox::from_id_source("sd_sampler_select")
+                            .selected_text(&self.sd_selected_sampler)
+                            .show_ui(ui, |ui| {
+                                for sampler in &self.sd_samplers {
+                                    ui.selectable_value(
+                                        &mut self.sd_selected_sampler,
+                                        sampler.name.clone(),
+                                        &sampler.name
+                                    );
+                                }
+                            });
+                        ui.end_row();
+                    }
+                    
+                    // Steps slider
+                    ui.label("Steps:");
+                    ui.add(egui::Slider::new(&mut self.sd_steps, 10..=50).text(""));
+                    ui.end_row();
+                    
+                    // CFG Scale slider
+                    ui.label("CFG Scale:");
+                    ui.add(egui::Slider::new(&mut self.sd_cfg_scale, 1.0..=15.0).text(""));
+                    ui.end_row();
+                    
+                    // Width and Height
+                    ui.label("Size:");
+                    ui.horizontal(|ui| {
+                        ui.add(egui::DragValue::new(&mut self.sd_width).speed(32).clamp_range(256..=1024));
+                        ui.label("×");
+                        ui.add(egui::DragValue::new(&mut self.sd_height).speed(32).clamp_range(256..=1024));
+                    });
+                    ui.end_row();
+                });
         });
     }
 } 
