@@ -36,7 +36,7 @@ A Rust-based GUI client for interacting with Large Language Models and Stable Di
 
 ```bash
 # Clone the repository
-git clone [your-repo-url]
+git clone https://github.com/akafinch/llm-client.git
 cd llm-client
 
 # Build and run
