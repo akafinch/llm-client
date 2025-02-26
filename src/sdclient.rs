@@ -16,6 +16,8 @@ pub struct TextToImageRequest {
     pub height: u32,
     pub sampler_name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub scheduler: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub seed: Option<i64>,
     #[serde(skip_serializing_if = "TextToImageRequest::is_empty_value")]
     pub alwayson_scripts: serde_json::Value,
@@ -64,6 +66,11 @@ pub struct Sampler {
     pub name: String,
     pub aliases: Option<Vec<String>>,
     pub options: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct ScheduleType {
+    pub name: String,
 }
 
 #[derive(Clone)]
@@ -152,6 +159,26 @@ impl SDClient {
             .context("Failed to parse samplers response")?;
             
         Ok(samplers)
+    }
+    
+    pub async fn get_available_schedulers(&self, sampler_name: &str) -> Result<Vec<String>> {
+        // The Automatic1111 API doesn't directly expose a method to get schedule types
+        // Based on the warning message, we know common ones are:
+        // "Automatic", "Uniform", "Karras", "Exponential", "Polyexponential"
+        
+        // Hard-coded list of common schedulers - this could be improved with a more API-based approach
+        // if the Automatic1111 API eventually exposes a method for this
+        let default_schedulers = vec![
+            "Automatic".to_string(),
+            "Uniform".to_string(), 
+            "Karras".to_string(), 
+            "Exponential".to_string(), 
+            "Polyexponential".to_string()
+        ];
+
+        // Optionally, we could try to parse these from sampler.options if available in the future
+        // For now, return the default list
+        Ok(default_schedulers)
     }
     
     pub async fn change_model(&self, model_name: &str) -> Result<()> {

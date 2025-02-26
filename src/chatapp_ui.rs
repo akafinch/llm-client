@@ -597,14 +597,43 @@ impl ChatApp {
                         ui.spinner();
                         ui.end_row();
                     } else {
+                        let mut selected_sampler = self.sd_selected_sampler.clone();
                         egui::ComboBox::from_id_source("sd_sampler_select")
-                            .selected_text(&self.sd_selected_sampler)
+                            .selected_text(&selected_sampler)
                             .show_ui(ui, |ui| {
                                 for sampler in &self.sd_samplers {
                                     ui.selectable_value(
-                                        &mut self.sd_selected_sampler,
+                                        &mut selected_sampler,
                                         sampler.name.clone(),
                                         &sampler.name
+                                    );
+                                }
+                            });
+                            
+                        // If sampler changed, just update the selected sampler without auto-loading
+                        if selected_sampler != self.sd_selected_sampler {
+                            self.sd_selected_sampler = selected_sampler;
+                        }
+                        
+                        ui.end_row();
+                    }
+                    
+                    // Schedule Type selection (new)
+                    ui.label("Schedule Type:");
+                    
+                    if self.sd_schedulers_loading {
+                        ui.spinner();
+                        ui.end_row();
+                    } else {
+                        // No auto-loading, just show the dropdown with available options
+                        egui::ComboBox::from_id_source("sd_scheduler_select")
+                            .selected_text(&self.sd_selected_scheduler)
+                            .show_ui(ui, |ui| {
+                                for scheduler in &self.sd_schedulers {
+                                    ui.selectable_value(
+                                        &mut self.sd_selected_scheduler,
+                                        scheduler.clone(),
+                                        scheduler
                                     );
                                 }
                             });

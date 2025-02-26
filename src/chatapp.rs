@@ -47,6 +47,9 @@ pub struct ChatApp {
     pub sd_lora_weight: f32,
     pub sd_samplers: Vec<Sampler>,
     pub sd_selected_sampler: String,
+    pub sd_schedulers: Vec<String>,
+    pub sd_selected_scheduler: String,
+    pub sd_schedulers_loading: bool,
     pub sd_steps: u32,
     pub sd_cfg_scale: f32,
     pub sd_width: u32,
@@ -100,6 +103,9 @@ impl ChatApp {
             sd_lora_weight: 0.7,
             sd_samplers: Vec::new(),
             sd_selected_sampler: "Euler a".to_string(),
+            sd_schedulers: Vec::new(),
+            sd_selected_scheduler: "Automatic".to_string(),
+            sd_schedulers_loading: false,
             sd_steps: 20,
             sd_cfg_scale: 7.0,
             sd_width: 512,
@@ -306,6 +312,31 @@ impl ChatApp {
             });
         }
         
+        // Load scheduler types based on the selected sampler
+        if !self.sd_schedulers_loading && !self.sd_selected_sampler.is_empty() {
+            self.sd_schedulers_loading = true;
+            
+            let sd_client = self.sd_client.clone();
+            let ctx_clone = ctx.clone();
+            let sampler_name = self.sd_selected_sampler.clone();
+            
+            tokio::spawn(async move {
+                match sd_client.get_available_schedulers(&sampler_name).await {
+                    Ok(schedulers) => {
+                        ctx_clone.memory_mut(|mem| {
+                            mem.data.insert_temp(egui::Id::new("sd_schedulers"), schedulers);
+                        });
+                    }
+                    Err(e) => {
+                        println!("Failed to fetch schedulers: {}", e);
+                        ctx_clone.memory_mut(|mem| {
+                            mem.data.insert_temp(egui::Id::new("sd_schedulers_error"), format!("{}", e));
+                        });
+                    }
+                }
+            });
+        }
+        
         // Check if data is ready and process it
         if let Some(models) = ctx.memory_mut(|mem| mem.data.remove_temp::<Vec<SDModel>>(egui::Id::new("sd_models"))) {
             self.sd_models = models;
@@ -339,6 +370,19 @@ impl ChatApp {
                         }
                     });
             }
+            
+            // When samplers are loaded or changed, we reload schedulers
+            self.sd_schedulers_loading = false;
+        }
+        
+        if let Some(schedulers) = ctx.memory_mut(|mem| mem.data.remove_temp::<Vec<String>>(egui::Id::new("sd_schedulers"))) {
+            self.sd_schedulers = schedulers;
+            self.sd_schedulers_loading = false;
+            
+            // Select Automatic by default if empty
+            if self.sd_selected_scheduler.is_empty() && !self.sd_schedulers.is_empty() {
+                self.sd_selected_scheduler = self.sd_schedulers[0].clone();
+            }
         }
     }
 
@@ -354,6 +398,7 @@ impl ChatApp {
         let width = self.sd_width;
         let height = self.sd_height;
         let sampler_name = self.sd_selected_sampler.clone();
+        let scheduler = Some(self.sd_selected_scheduler.clone());
         let model_name = self.sd_selected_model.clone();
         
         // Add LoRA to prompt instead of using alwayson_scripts
@@ -387,6 +432,7 @@ impl ChatApp {
                     width,
                     height,
                     sampler_name,
+                    scheduler,
                     seed: None, // Random seed
                     alwayson_scripts: serde_json::json!({}), // Empty, since we're using prompt-based LoRA
                 };
