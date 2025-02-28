@@ -434,6 +434,12 @@ impl ChatApp {
                     sampler_name,
                     scheduler,
                     seed: None, // Random seed
+                    // Add the new hires.fix fields as None, they'll be filled with default values in generate_image
+                    enable_hr: None,
+                    hr_scale: None,
+                    hr_upscaler: None,
+                    hr_second_pass_steps: None,
+                    denoising_strength: None,
                     alwayson_scripts: serde_json::json!({}), // Empty, since we're using prompt-based LoRA
                 };
                 

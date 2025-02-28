@@ -19,6 +19,17 @@ pub struct TextToImageRequest {
     pub scheduler: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub seed: Option<i64>,
+    // Hires.fix parameters (optional with skip_serializing_if)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enable_hr: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hr_scale: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hr_upscaler: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hr_second_pass_steps: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub denoising_strength: Option<f32>,
     #[serde(skip_serializing_if = "TextToImageRequest::is_empty_value")]
     pub alwayson_scripts: serde_json::Value,
 }
@@ -204,8 +215,15 @@ impl SDClient {
         Ok(())
     }
     
-    pub async fn generate_image(&self, request: TextToImageRequest) -> Result<Vec<u8>> {
+    pub async fn generate_image(&self, mut request: TextToImageRequest) -> Result<Vec<u8>> {
         let url = format!("{}/sdapi/v1/txt2img", self.base_url.trim_end_matches('/'));
+        
+        // Set default values for hires.fix
+        request.enable_hr = Some(true);
+        request.hr_scale = Some(2.0);
+        request.hr_upscaler = Some("Latent".to_string());
+        request.hr_second_pass_steps = Some(request.steps / 2);  // Half the original steps
+        request.denoising_strength = Some(0.55);  // Good default value
         
         println!("Sending request to Stable Diffusion API: {}", url);
         
