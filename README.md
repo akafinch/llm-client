@@ -30,7 +30,7 @@ A Rust-based GUI client for interacting with Large Language Models and Stable Di
   - [LM Studio](https://lmstudio.ai/) running locally
   - [Ollama](https://ollama.ai/) with at least one model installed
 - For image generation:
-  - [Automatic1111 WebUI](https://github.com/AUTOMATIC1111/stable-diffusion-webui) running with the `--api` flag enabled
+  - [Automatic1111 WebUI](https://github.com/AUTOMATIC1111/stable-diffusion-webui) running with the ` --listen --xformers --api --enable-insecure-extension-access --server-name 0.0.0.0` flags enabled
 
 ## Building
 
